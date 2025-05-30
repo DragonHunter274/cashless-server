@@ -25,6 +25,17 @@ type Transaction struct {
 	CreatedAt time.Time `json:"created_at"`
 }
 
+type CashPurchase struct {
+	Amount    int    `json:"amount"`
+	Product   string `json:"product"`
+	MachineID string `json:"machine_id"`
+}
+
+type TopUpRequest struct {
+	UID    string `json:"uid"`
+	Amount int    `json:"amount"`
+}
+
 type PurchaseRequest struct {
 	UID       *string `json:"uid"`
 	Amount    int     `json:"amount"`
@@ -122,6 +133,7 @@ func initDB() error {
 			status TEXT,
 			payment_method TEXT,
 			machine_id TEXT,
+			is_cash BOOLEAN DEFAULT FALSE,
 			created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 		);`,
 		`CREATE INDEX IF NOT EXISTS idx_transactions_status ON transactions(status);`,
@@ -140,6 +152,76 @@ func initDB() error {
 func ensureUser(uid string) error {
 	_, err := db.Exec(`INSERT INTO users (uid) VALUES ($1) ON CONFLICT DO NOTHING`, uid)
 	return err
+}
+
+func topUpHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req TopUpRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	if req.UID == "" || req.Amount <= 0 {
+		http.Error(w, "Invalid top-up data", http.StatusBadRequest)
+		return
+	}
+
+	_, err := db.Exec(`
+		INSERT INTO users (uid) VALUES ($1)
+		ON CONFLICT (uid) DO NOTHING
+	`, req.UID)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	_, err = db.Exec(`
+		INSERT INTO transactions (uid, amount, status, created_at, is_cash)
+		VALUES ($1, $2, 'confirmed', NOW(), false)
+	`, req.UID, req.Amount)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	w.WriteHeader(http.StatusCreated)
+	fmt.Fprintln(w, "Top-up successful")
+}
+
+func cashPurchaseHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var purchase CashPurchase
+	if err := json.NewDecoder(r.Body).Decode(&purchase); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	if purchase.Amount <= 0 || purchase.Product == "" || purchase.MachineID == "" {
+		http.Error(w, "Invalid purchase data", http.StatusBadRequest)
+		return
+	}
+
+	_, err := db.Exec(`
+		INSERT INTO transactions (amount, status, product, machine, created_at, is_cash)
+		VALUES ($1, 'confirmed', $2, $3, NOW(), true)
+	`, purchase.Amount, purchase.Product, purchase.MachineID)
+
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	w.WriteHeader(http.StatusCreated)
+	fmt.Fprintln(w, "Cash purchase recorded")
 }
 
 func makePurchaseHandler(w http.ResponseWriter, r *http.Request) {
@@ -324,6 +406,8 @@ func main() {
 	http.HandleFunc("/createUser", createUserHandler)
 	http.HandleFunc("/createVoucher", createVoucherHandler)
 	http.HandleFunc("/createPrivilege", createPrivilegeHandler)
+	http.HandleFunc("/cashPurchase", cashPurchaseHandler)
+	http.HandleFunc("/topUp", topUpHandler)
 	http.Handle("/metrics", promhttp.Handler())
 
 	log.Println("Server started on :8080")
