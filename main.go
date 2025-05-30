@@ -30,7 +30,7 @@ type Transaction struct {
 
 type CashPurchase struct {
 	Amount    int    `json:"amount"`
-	Product   string `json:"product"`
+	Product   int    `json:"product"`
 	MachineID string `json:"machine_id"`
 }
 
@@ -42,7 +42,7 @@ type TopUpRequest struct {
 type PurchaseRequest struct {
 	UID       *string `json:"uid"`
 	Amount    int     `json:"amount"`
-	Product   string  `json:"product"`
+	Product   int     `json:"product"`
 	MachineID string  `json:"machine_id"`
 }
 
@@ -308,23 +308,26 @@ func cashPurchaseHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if purchase.Amount <= 0 || purchase.Product == "" || purchase.MachineID == "" {
+	if purchase.Amount <= 0 || purchase.Product <= 0 || purchase.MachineID == "" {
 		http.Error(w, "Invalid purchase data", http.StatusBadRequest)
 		return
 	}
 
-	_, err := db.Exec(`
+	var txID int64
+	err := db.QueryRow(`
 		INSERT INTO transactions (amount, status, product, machine_id, created_at, is_cash)
 		VALUES ($1, 'confirmed', $2, $3, NOW(), true)
-	`, -purchase.Amount, purchase.Product, purchase.MachineID)
+		RETURNING id
+	`, -purchase.Amount, fmt.Sprintf("%d", purchase.Product), purchase.MachineID).Scan(&txID)
 
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 
+	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
-	fmt.Fprintln(w, "Cash purchase recorded")
+	json.NewEncoder(w).Encode(map[string]interface{}{"transaction_id": txID})
 }
 
 func makePurchaseHandler(w http.ResponseWriter, r *http.Request) {
@@ -338,7 +341,7 @@ func makePurchaseHandler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	if req.Product == "" || req.MachineID == "" {
+	if req.Product <= 0 || req.MachineID == "" {
 		http.Error(w, "Missing fields", http.StatusBadRequest)
 		return
 	}
@@ -378,7 +381,7 @@ func makePurchaseHandler(w http.ResponseWriter, r *http.Request) {
 		RETURNING id`,
 		req.UID,
 		-req.Amount,
-		req.Product,
+		fmt.Sprintf("%d", req.Product),
 		ternary(req.UID == nil, "cash", "digital"),
 		req.MachineID,
 	).Scan(&txID)
