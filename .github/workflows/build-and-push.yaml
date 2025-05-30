@@ -1,10 +1,10 @@
-name: Build and Push Docker Image to GHCR
+name: Build and Push Multi-Platform Docker Image to GHCR
 
 on:
   push:
     branches:
-      - main  # or your default branch
-  workflow_dispatch:  # allows manual trigger from the GitHub UI
+      - main
+  workflow_dispatch:
 
 jobs:
   build-and-push:
@@ -12,30 +12,37 @@ jobs:
 
     permissions:
       contents: read
-      packages: write  # required to push to GHCR
-      id-token: write  # for OIDC if using GitHub Actions to authenticate
+      packages: write
+      id-token: write
 
     steps:
       - name: Checkout source code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v4.1.1  # Renovate can track and update this
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3.2.0  # Pin to version for Renovate
 
       - name: Log in to GitHub Container Registry
-        uses: docker/login-action@v3
+        uses: docker/login-action@v3.1.0  # Pin for Renovate compatibility
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Set up Docker image name
+      - name: Set up image tags
         id: vars
         run: |
-          IMAGE_NAME=ghcr.io/${GITHUB_REPOSITORY,,}:latest
+          REPO_LOWERCASE=${GITHUB_REPOSITORY,,}
+          IMAGE_NAME=ghcr.io/$REPO_LOWERCASE
+          COMMIT_TAG=${GITHUB_SHA::7}
           echo "image_name=$IMAGE_NAME" >> $GITHUB_OUTPUT
+          echo "commit_tag=$COMMIT_TAG" >> $GITHUB_OUTPUT
 
-      - name: Build Docker image
-        run: |
-          docker build -t ${{ steps.vars.outputs.image_name }} .
-
-      - name: Push Docker image to GHCR
-        run: |
-          docker push ${{ steps.vars.outputs.image_name }}
+      - name: Build and push Docker image (multi-platform)
+        uses: docker/build-push-action@v5.3.0  # Renovate-friendly
+        with:
+          context: .
+          push: true
+          platforms: linux/amd64,linux/arm64
+          tags: |
+            ${{ steps.vars.outputs.image_name }}:latest
