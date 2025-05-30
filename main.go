@@ -15,6 +15,8 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
+// ... (keep all your existing struct definitions)
+
 type Transaction struct {
 	ID        int       `json:"transaction_id"`
 	UID       *string   `json:"uid"`
@@ -74,18 +76,78 @@ type PrivilegeRequest struct {
 
 var db *sql.DB
 
-var (
-	purchaseCounter = prometheus.NewCounterVec(
-		prometheus.CounterOpts{
-			Name: "purchases_total",
-			Help: "Total number of confirmed purchases",
-		},
-		[]string{"product", "machine_id", "method"},
-	)
-)
+// Custom Prometheus collector that fetches data from database
+type PurchaseCollector struct {
+	purchaseDesc *prometheus.Desc
+}
+
+func NewPurchaseCollector() *PurchaseCollector {
+	return &PurchaseCollector{
+		purchaseDesc: prometheus.NewDesc(
+			"purchases_total",
+			"Total number of confirmed purchases",
+			[]string{"product", "machine_id", "method"},
+			nil,
+		),
+	}
+}
+
+func (c *PurchaseCollector) Describe(ch chan<- *prometheus.Desc) {
+	ch <- c.purchaseDesc
+}
+
+func (c *PurchaseCollector) Collect(ch chan<- prometheus.Metric) {
+	if db == nil {
+		return
+	}
+
+	// Query the database for confirmed purchases grouped by product, machine_id, and payment method
+	rows, err := db.Query(`
+		SELECT 
+			COALESCE(product, '') as product,
+			COALESCE(machine_id, '') as machine_id,
+			CASE 
+				WHEN is_cash = true THEN 'cash'
+				ELSE COALESCE(payment_method, 'unknown')
+			END as method,
+			COUNT(*) as count
+		FROM transactions 
+		WHERE status = 'confirmed' 
+			AND amount < 0  -- Only actual purchases (negative amounts)
+		GROUP BY product, machine_id, is_cash, payment_method
+	`)
+	if err != nil {
+		log.Printf("Error querying purchase metrics: %v", err)
+		return
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var product, machineID, method string
+		var count float64
+
+		if err := rows.Scan(&product, &machineID, &method, &count); err != nil {
+			log.Printf("Error scanning purchase metric row: %v", err)
+			continue
+		}
+
+		metric, err := prometheus.NewConstMetric(
+			c.purchaseDesc,
+			prometheus.CounterValue,
+			count,
+			product, machineID, method,
+		)
+		if err != nil {
+			log.Printf("Error creating metric: %v", err)
+			continue
+		}
+
+		ch <- metric
+	}
+}
 
 func init() {
-	prometheus.MustRegister(purchaseCounter)
+	prometheus.MustRegister(NewPurchaseCollector())
 }
 
 func initDB() error {
@@ -144,6 +206,7 @@ func initDB() error {
 		);`,
 		`CREATE INDEX IF NOT EXISTS idx_transactions_status ON transactions(status);`,
 		`CREATE INDEX IF NOT EXISTS idx_transactions_uid ON transactions(uid);`,
+		`CREATE INDEX IF NOT EXISTS idx_transactions_metrics ON transactions(status, amount, product, machine_id, is_cash, payment_method);`,
 	}
 
 	for _, table := range tables {
@@ -251,9 +314,9 @@ func cashPurchaseHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	_, err := db.Exec(`
-		INSERT INTO transactions (amount, status, product, machine, created_at, is_cash)
+		INSERT INTO transactions (amount, status, product, machine_id, created_at, is_cash)
 		VALUES ($1, 'confirmed', $2, $3, NOW(), true)
-	`, purchase.Amount, purchase.Product, purchase.MachineID)
+	`, -purchase.Amount, purchase.Product, purchase.MachineID)
 
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -351,12 +414,11 @@ func confirmPurchaseHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	rows, _ := res.RowsAffected()
-	if rows > 0 {
-		var product, machineID, method string
-		db.QueryRow(`SELECT product, machine_id, payment_method FROM transactions WHERE id = $1`, req.TransactionID).
-			Scan(&product, &machineID, &method)
-		purchaseCounter.WithLabelValues(product, machineID, method).Inc()
+	if rows == 0 {
+		http.Error(w, "Transaction not found or already processed", http.StatusNotFound)
+		return
 	}
+
 	w.WriteHeader(http.StatusOK)
 }
 
@@ -446,7 +508,7 @@ func main() {
 	http.HandleFunc("/createUser", apiKeyMiddleware(createUserHandler))
 	http.HandleFunc("/createVoucher", apiKeyMiddleware(createVoucherHandler))
 	http.HandleFunc("/createPrivilege", apiKeyMiddleware(createPrivilegeHandler))
-	http.HandleFunc("/cashPurchase", apiKeyMiddleware(cashPurchaseHandler))
+	http.HandleFunc("/makeCashPurchase", apiKeyMiddleware(cashPurchaseHandler))
 	http.HandleFunc("/topUp", apiKeyMiddleware(topUpHandler))
 	http.Handle("/metrics", promhttp.Handler())
 
