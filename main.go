@@ -7,6 +7,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"strings"
 	"time"
 
 	_ "github.com/lib/pq"
@@ -136,6 +137,11 @@ func initDB() error {
 			is_cash BOOLEAN DEFAULT FALSE,
 			created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 		);`,
+		`CREATE TABLE IF NOT EXISTS api_keys (
+			key TEXT PRIMARY KEY,
+			allowed_endpoints TEXT, -- comma-separated list of paths
+			created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+		);`,
 		`CREATE INDEX IF NOT EXISTS idx_transactions_status ON transactions(status);`,
 		`CREATE INDEX IF NOT EXISTS idx_transactions_uid ON transactions(uid);`,
 	}
@@ -147,6 +153,40 @@ func initDB() error {
 	}
 
 	return nil
+}
+
+func apiKeyMiddleware(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		apiKey := r.Header.Get("X-API-Key")
+		if apiKey == "" {
+			http.Error(w, "Missing API key", http.StatusUnauthorized)
+			return
+		}
+
+		var allowedEndpoints string
+		err := db.QueryRow("SELECT allowed_endpoints FROM api_keys WHERE key = $1", apiKey).Scan(&allowedEndpoints)
+		if err != nil {
+			http.Error(w, "Invalid API key", http.StatusForbidden)
+			return
+		}
+
+		// Check if the requested path is allowed
+		requestedPath := r.URL.Path
+		allowed := false
+		for _, endpoint := range strings.Split(allowedEndpoints, ",") {
+			if strings.TrimSpace(endpoint) == requestedPath {
+				allowed = true
+				break
+			}
+		}
+
+		if !allowed {
+			http.Error(w, "API key not authorized for this endpoint", http.StatusForbidden)
+			return
+		}
+
+		next.ServeHTTP(w, r)
+	}
 }
 
 func ensureUser(uid string) error {
@@ -400,14 +440,14 @@ func main() {
 	}
 	defer db.Close()
 
-	http.HandleFunc("/makePurchase", makePurchaseHandler)
-	http.HandleFunc("/confirmPurchase", confirmPurchaseHandler)
-	http.HandleFunc("/getBalance", getBalanceHandler)
-	http.HandleFunc("/createUser", createUserHandler)
-	http.HandleFunc("/createVoucher", createVoucherHandler)
-	http.HandleFunc("/createPrivilege", createPrivilegeHandler)
-	http.HandleFunc("/cashPurchase", cashPurchaseHandler)
-	http.HandleFunc("/topUp", topUpHandler)
+	http.HandleFunc("/makePurchase", apiKeyMiddleware(makePurchaseHandler))
+	http.HandleFunc("/confirmPurchase", apiKeyMiddleware(confirmPurchaseHandler))
+	http.HandleFunc("/getBalance", apiKeyMiddleware(getBalanceHandler))
+	http.HandleFunc("/createUser", apiKeyMiddleware(createUserHandler))
+	http.HandleFunc("/createVoucher", apiKeyMiddleware(createVoucherHandler))
+	http.HandleFunc("/createPrivilege", apiKeyMiddleware(createPrivilegeHandler))
+	http.HandleFunc("/cashPurchase", apiKeyMiddleware(cashPurchaseHandler))
+	http.HandleFunc("/topUp", apiKeyMiddleware(topUpHandler))
 	http.Handle("/metrics", promhttp.Handler())
 
 	log.Println("Server started on :8080")
