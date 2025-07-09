@@ -170,40 +170,44 @@ func initDB() error {
 
 	tables := []string{
 		`CREATE TABLE IF NOT EXISTS users (
-			uid TEXT PRIMARY KEY,
-			created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-		);`,
+		uid TEXT PRIMARY KEY,
+		created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+	);`,
 		`CREATE TABLE IF NOT EXISTS user_machine_privileges (
-			uid TEXT,
-			machine_id TEXT,
-			free_vend BOOLEAN DEFAULT FALSE,
-			PRIMARY KEY (uid, machine_id),
-			FOREIGN KEY (uid) REFERENCES users(uid)
-		);`,
+		uid TEXT,
+		machine_id TEXT,
+		free_vend BOOLEAN DEFAULT FALSE,
+		PRIMARY KEY (uid, machine_id),
+		FOREIGN KEY (uid) REFERENCES users(uid)
+	);`,
 		`CREATE TABLE IF NOT EXISTS vend_vouchers (
-			id SERIAL PRIMARY KEY,
-			uid TEXT,
-			machine_id TEXT,
-			used BOOLEAN DEFAULT FALSE,
-			created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-			FOREIGN KEY (uid) REFERENCES users(uid)
-		);`,
+		id SERIAL PRIMARY KEY,
+		uid TEXT,
+		machine_id TEXT,
+		used BOOLEAN DEFAULT FALSE,
+		created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+		FOREIGN KEY (uid) REFERENCES users(uid)
+	);`,
 		`CREATE TABLE IF NOT EXISTS transactions (
-			id SERIAL PRIMARY KEY,
-			uid TEXT,
-			amount INTEGER NOT NULL,
-			product TEXT,
-			status TEXT,
-			payment_method TEXT,
-			machine_id TEXT,
-			is_cash BOOLEAN DEFAULT FALSE,
-			created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-		);`,
+		id SERIAL PRIMARY KEY,
+		uid TEXT,
+		amount INTEGER NOT NULL,
+		product TEXT,
+		status TEXT,
+		payment_method TEXT,
+		machine_id TEXT,
+		is_cash BOOLEAN DEFAULT FALSE,
+		created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+	);`,
 		`CREATE TABLE IF NOT EXISTS api_keys (
-			key TEXT PRIMARY KEY,
-			allowed_endpoints TEXT, -- comma-separated list of paths
-			created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-		);`,
+		key TEXT PRIMARY KEY,
+		allowed_endpoints TEXT, -- comma-separated list of paths
+		created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+	);`,
+		`CREATE TABLE IF NOT EXISTS product_map (
+		id INT PRIMARY KEY,
+		product_name TEXT
+	);`,
 		`CREATE INDEX IF NOT EXISTS idx_transactions_status ON transactions(status);`,
 		`CREATE INDEX IF NOT EXISTS idx_transactions_uid ON transactions(uid);`,
 		`CREATE INDEX IF NOT EXISTS idx_transactions_metrics ON transactions(status, amount, product, machine_id, is_cash, payment_method);`,
@@ -318,7 +322,7 @@ func cashPurchaseHandler(w http.ResponseWriter, r *http.Request) {
 		INSERT INTO transactions (amount, status, product, machine_id, created_at, is_cash)
 		VALUES ($1, 'confirmed', $2, $3, NOW(), true)
 		RETURNING id
-	`, -purchase.Amount, fmt.Sprintf("%d", purchase.Product), purchase.MachineID).Scan(&txID)
+	`, -purchase.Amount, get_product_name(purchase.Product), purchase.MachineID).Scan(&txID)
 
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -328,6 +332,15 @@ func cashPurchaseHandler(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
 	json.NewEncoder(w).Encode(map[string]interface{}{"transaction_id": txID})
+}
+
+func get_product_name(id int) string {
+	var productName string
+	err := db.QueryRow(`SELECT product_name FROM  WHERE id = $1`, id).Scan(&productName)
+	if err == nil {
+		return productName
+	}
+	return fmt.Sprintf("%d", id)
 }
 
 func makePurchaseHandler(w http.ResponseWriter, r *http.Request) {
@@ -381,7 +394,7 @@ func makePurchaseHandler(w http.ResponseWriter, r *http.Request) {
 		RETURNING id`,
 		req.UID,
 		-req.Amount,
-		fmt.Sprintf("%d", req.Product),
+		get_product_name(req.Product),
 		ternary(req.UID == nil, "cash", "digital"),
 		req.MachineID,
 	).Scan(&txID)
@@ -499,22 +512,44 @@ func ternary[T any](cond bool, a, b T) T {
 	return b
 }
 
+func corsMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Set CORS headers
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		w.Header().Set("Access-Control-Allow-Methods", "POST, GET, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, X-API-Key")
+
+		// Handle preflight OPTIONS request
+		if r.Method == "OPTIONS" {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+
+		// Continue to the next handler
+		next.ServeHTTP(w, r)
+	})
+}
+
 func main() {
 	if err := initDB(); err != nil {
 		log.Fatal(err)
 	}
 	defer db.Close()
 
-	http.HandleFunc("/makePurchase", apiKeyMiddleware(makePurchaseHandler))
-	http.HandleFunc("/confirmPurchase", apiKeyMiddleware(confirmPurchaseHandler))
-	http.HandleFunc("/getBalance", apiKeyMiddleware(getBalanceHandler))
-	http.HandleFunc("/createUser", apiKeyMiddleware(createUserHandler))
-	http.HandleFunc("/createVoucher", apiKeyMiddleware(createVoucherHandler))
-	http.HandleFunc("/createPrivilege", apiKeyMiddleware(createPrivilegeHandler))
-	http.HandleFunc("/makeCashPurchase", apiKeyMiddleware(cashPurchaseHandler))
-	http.HandleFunc("/topUp", apiKeyMiddleware(topUpHandler))
-	http.Handle("/metrics", promhttp.Handler())
+	mux := http.NewServeMux()
+
+	mux.HandleFunc("/makePurchase", apiKeyMiddleware(makePurchaseHandler))
+	mux.HandleFunc("/confirmPurchase", apiKeyMiddleware(confirmPurchaseHandler))
+	mux.HandleFunc("/getBalance", apiKeyMiddleware(getBalanceHandler))
+	mux.HandleFunc("/createUser", apiKeyMiddleware(createUserHandler))
+	mux.HandleFunc("/createVoucher", apiKeyMiddleware(createVoucherHandler))
+	mux.HandleFunc("/createPrivilege", apiKeyMiddleware(createPrivilegeHandler))
+	mux.HandleFunc("/makeCashPurchase", apiKeyMiddleware(cashPurchaseHandler))
+	mux.HandleFunc("/topUp", apiKeyMiddleware(topUpHandler))
+	mux.Handle("/metrics", promhttp.Handler())
+
+	handler := corsMiddleware(mux)
 
 	log.Println("Server started on :8080")
-	log.Fatal(http.ListenAndServe(":8080", nil))
+	log.Fatal(http.ListenAndServe(":8080", handler))
 }
