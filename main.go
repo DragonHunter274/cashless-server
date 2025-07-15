@@ -404,7 +404,8 @@ func makePurchaseHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if useVoucher {
-		_, _ = db.Exec(`UPDATE vend_vouchers SET used = TRUE WHERE uid = $1 AND machine_id = $2 AND used = FALSE LIMIT 1`, *req.UID, req.MachineID)
+		//_, _ = db.Exec(`UPDATE vend_vouchers SET used = TRUE WHERE uid = $1 AND machine_id = $2 AND used = FALSE LIMIT 1`, *req.UID, req.MachineID)
+		_, _ = db.Exec(`UPDATE vend_vouchers SET used = TRUE WHERE id = (SELECT id FROM vend_vouchers WHERE uid = $1 AND machine_id = $2 AND used = FALSE LIMIT 1)`, *req.UID, req.MachineID) //potential fix for voucher issue
 	}
 
 	// Set timeout for pending transactions
