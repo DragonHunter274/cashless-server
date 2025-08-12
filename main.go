@@ -103,17 +103,18 @@ func (c *PurchaseCollector) Collect(ch chan<- prometheus.Metric) {
 
 	// Query the database for confirmed purchases grouped by product, machine_id, and payment method
 	rows, err := db.Query(`
-		SELECT 
+		SELECT
 			COALESCE(product, '') as product,
 			COALESCE(machine_id, '') as machine_id,
-			CASE 
+			CASE
 				WHEN is_cash = true THEN 'cash'
 				ELSE COALESCE(payment_method, 'unknown')
 			END as method,
-			COUNT(*) as count
-		FROM transactions 
-		WHERE status = 'confirmed' 
-			AND amount < 0  -- Only actual purchases (negative amounts)
+			COUNT(*) as count,
+			MAX(created_at) as latest_created_at
+		FROM transactions
+		WHERE status = 'confirmed'
+		AND amount < 0 -- Only actual purchases (negative amounts)
 		GROUP BY product, machine_id, is_cash, payment_method
 	`)
 	if err != nil {
@@ -125,23 +126,24 @@ func (c *PurchaseCollector) Collect(ch chan<- prometheus.Metric) {
 	for rows.Next() {
 		var product, machineID, method string
 		var count float64
-
-		if err := rows.Scan(&product, &machineID, &method, &count); err != nil {
+		var createdAt time.Time
+		if err := rows.Scan(&product, &machineID, &method, &count, &createdAt); err != nil {
 			log.Printf("Error scanning purchase metric row: %v", err)
 			continue
 		}
 
-		metric, err := prometheus.NewConstMetric(
+		// Create metric with created timestamp
+		metric, err := prometheus.NewConstMetricWithCreatedTimestamp(
 			c.purchaseDesc,
 			prometheus.CounterValue,
 			count,
+			createdAt,
 			product, machineID, method,
 		)
 		if err != nil {
 			log.Printf("Error creating metric: %v", err)
 			continue
 		}
-
 		ch <- metric
 	}
 }
