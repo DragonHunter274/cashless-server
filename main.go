@@ -336,7 +336,7 @@ func cashPurchaseHandler(w http.ResponseWriter, r *http.Request) {
 
 func get_product_name(id int) string {
 	var productName string
-	err := db.QueryRow(`SELECT product_name FROM  WHERE id = $1`, id).Scan(&productName)
+	err := db.QueryRow(`SELECT product_name FROM product_map WHERE id = $1`, id).Scan(&productName)
 	if err == nil {
 		return productName
 	}
