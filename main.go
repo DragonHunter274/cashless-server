@@ -8,11 +8,14 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	_ "github.com/lib/pq"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
+	"github.com/prometheus/prometheus/prompb"
+	"github.com/prometheus/prometheus/storage/remote"
 )
 
 // ... (keep all your existing struct definitions)
@@ -76,9 +79,10 @@ type PrivilegeRequest struct {
 
 var db *sql.DB
 
-// Custom Prometheus collector that fetches data from database
 type PurchaseCollector struct {
-	purchaseDesc *prometheus.Desc
+	purchaseDesc  *prometheus.Desc
+	creationTimes map[string]time.Time // Cache creation timestamps
+	mu            sync.RWMutex
 }
 
 func NewPurchaseCollector() *PurchaseCollector {
@@ -89,55 +93,74 @@ func NewPurchaseCollector() *PurchaseCollector {
 			[]string{"product", "machine_id", "method"},
 			nil,
 		),
+		creationTimes: make(map[string]time.Time),
 	}
 }
 
+// Add this missing method
 func (c *PurchaseCollector) Describe(ch chan<- *prometheus.Desc) {
 	ch <- c.purchaseDesc
+}
+
+func (c *PurchaseCollector) getOrSetCreationTime(product, machineID, method string, firstTransactionTime time.Time) time.Time {
+	key := fmt.Sprintf("%s|%s|%s", product, machineID, method)
+	c.mu.RLock()
+	if createdAt, exists := c.creationTimes[key]; exists {
+		c.mu.RUnlock()
+		return createdAt
+	}
+	c.mu.RUnlock()
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	// Double-check after acquiring write lock
+	if createdAt, exists := c.creationTimes[key]; exists {
+		return createdAt
+	}
+	// Set and cache the creation time (use the first transaction time)
+	c.creationTimes[key] = firstTransactionTime
+	return firstTransactionTime
 }
 
 func (c *PurchaseCollector) Collect(ch chan<- prometheus.Metric) {
 	if db == nil {
 		return
 	}
-
-	// Query the database for confirmed purchases grouped by product, machine_id, and payment method
+	// Query for both count and FIRST transaction time per group
 	rows, err := db.Query(`
-		SELECT
-			COALESCE(product, '') as product,
-			COALESCE(machine_id, '') as machine_id,
-			CASE
-				WHEN is_cash = true THEN 'cash'
-				ELSE COALESCE(payment_method, 'unknown')
-			END as method,
-			COUNT(*) as count,
-			MAX(created_at) as latest_created_at
-		FROM transactions
-		WHERE status = 'confirmed'
-		AND amount < 0 -- Only actual purchases (negative amounts)
-		GROUP BY product, machine_id, is_cash, payment_method
-	`)
+        SELECT
+            COALESCE(product, '') as product,
+            COALESCE(machine_id, '') as machine_id,
+            CASE
+                WHEN is_cash = true THEN 'cash'
+                ELSE COALESCE(payment_method, 'unknown')
+            END as method,
+            COUNT(*) as count,
+            MIN(created_at) as first_created_at -- Use MIN, not MAX!
+        FROM transactions
+        WHERE status = 'confirmed'
+        AND amount < 0
+        GROUP BY product, machine_id, is_cash, payment_method
+    `)
 	if err != nil {
 		log.Printf("Error querying purchase metrics: %v", err)
 		return
 	}
 	defer rows.Close()
-
 	for rows.Next() {
 		var product, machineID, method string
 		var count float64
-		var createdAt time.Time
-		if err := rows.Scan(&product, &machineID, &method, &count, &createdAt); err != nil {
+		var firstCreatedAt time.Time
+		if err := rows.Scan(&product, &machineID, &method, &count, &firstCreatedAt); err != nil {
 			log.Printf("Error scanning purchase metric row: %v", err)
 			continue
 		}
-
-		// Create metric with created timestamp
+		// Get stable creation timestamp (cached after first encounter)
+		creationTime := c.getOrSetCreationTime(product, machineID, method, firstCreatedAt)
 		metric, err := prometheus.NewConstMetricWithCreatedTimestamp(
 			c.purchaseDesc,
 			prometheus.CounterValue,
 			count,
-			createdAt,
+			creationTime, // This is now stable!
 			product, machineID, method,
 		)
 		if err != nil {
@@ -533,6 +556,166 @@ func corsMiddleware(next http.Handler) http.Handler {
 	})
 }
 
+// Prometheus Remote Read handler - allows querying historical metrics from the database
+func remoteReadHandler(w http.ResponseWriter, r *http.Request) {
+	req, err := remote.DecodeReadRequest(r)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	resp := &prompb.ReadResponse{
+		Results: make([]*prompb.QueryResult, len(req.Queries)),
+	}
+
+	for i, query := range req.Queries {
+		resp.Results[i] = executeRemoteReadQuery(query)
+	}
+
+	if err := remote.EncodeReadResponse(resp, w); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+}
+
+// Execute a single remote read query against the database
+func executeRemoteReadQuery(query *prompb.Query) *prompb.QueryResult {
+	result := &prompb.QueryResult{
+		Timeseries: []*prompb.TimeSeries{},
+	}
+
+	// Extract time range (convert milliseconds to seconds for SQL)
+	startMs := query.StartTimestampMs
+	endMs := query.EndTimestampMs
+
+	// Parse matchers to extract label filters
+	productFilter := ""
+	machineFilter := ""
+	methodFilter := ""
+	matchesMetricName := false
+
+	for _, matcher := range query.Matchers {
+		if matcher.Name == "__name__" {
+			// Check if this query is for our historical metric
+			if matcher.Type == prompb.LabelMatcher_EQ && matcher.Value == "purchases_historical_total" {
+				matchesMetricName = true
+			} else if matcher.Type == prompb.LabelMatcher_RE && strings.Contains(matcher.Value, "purchases_historical_total") {
+				matchesMetricName = true
+			}
+		} else if matcher.Name == "product" && matcher.Type == prompb.LabelMatcher_EQ {
+			productFilter = matcher.Value
+		} else if matcher.Name == "machine_id" && matcher.Type == prompb.LabelMatcher_EQ {
+			machineFilter = matcher.Value
+		} else if matcher.Name == "method" && matcher.Type == prompb.LabelMatcher_EQ {
+			methodFilter = matcher.Value
+		}
+	}
+
+	// Only process if this query is for our metric
+	if !matchesMetricName {
+		return result
+	}
+
+	// Build SQL query with optional filters
+	// This query returns cumulative counts over time for each product/machine/method combination
+	sqlQuery := `
+		SELECT
+			COALESCE(product, '') as product,
+			COALESCE(machine_id, '') as machine_id,
+			CASE
+				WHEN is_cash = true THEN 'cash'
+				ELSE COALESCE(payment_method, 'unknown')
+			END as method,
+			created_at,
+			COUNT(*) OVER (
+				PARTITION BY product, machine_id, is_cash, payment_method
+				ORDER BY created_at
+				ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+			) as cumulative_count
+		FROM transactions
+		WHERE status = 'confirmed'
+		AND amount < 0
+		AND EXTRACT(EPOCH FROM created_at) * 1000 BETWEEN $1 AND $2
+	`
+
+	args := []interface{}{startMs, endMs}
+	argIdx := 3
+
+	if productFilter != "" {
+		sqlQuery += fmt.Sprintf(" AND product = $%d", argIdx)
+		args = append(args, productFilter)
+		argIdx++
+	}
+	if machineFilter != "" {
+		sqlQuery += fmt.Sprintf(" AND machine_id = $%d", argIdx)
+		args = append(args, machineFilter)
+		argIdx++
+	}
+	if methodFilter != "" {
+		if methodFilter == "cash" {
+			sqlQuery += " AND is_cash = true"
+		} else {
+			sqlQuery += fmt.Sprintf(" AND is_cash = false AND payment_method = $%d", argIdx)
+			args = append(args, methodFilter)
+			argIdx++
+		}
+	}
+
+	sqlQuery += " ORDER BY product, machine_id, is_cash, payment_method, created_at"
+
+	rows, err := db.Query(sqlQuery, args...)
+	if err != nil {
+		log.Printf("Error querying remote read data: %v", err)
+		return result
+	}
+	defer rows.Close()
+
+	// Group samples by time series (product, machine_id, method)
+	timeSeriesMap := make(map[string]*prompb.TimeSeries)
+
+	for rows.Next() {
+		var product, machineID, method string
+		var createdAt time.Time
+		var cumulativeCount int64
+
+		if err := rows.Scan(&product, &machineID, &method, &createdAt, &cumulativeCount); err != nil {
+			log.Printf("Error scanning remote read row: %v", err)
+			continue
+		}
+
+		// Create time series key
+		tsKey := fmt.Sprintf("%s|%s|%s", product, machineID, method)
+
+		// Get or create time series
+		ts, exists := timeSeriesMap[tsKey]
+		if !exists {
+			ts = &prompb.TimeSeries{
+				Labels: []prompb.Label{
+					{Name: "__name__", Value: "purchases_historical_total"},
+					{Name: "product", Value: product},
+					{Name: "machine_id", Value: machineID},
+					{Name: "method", Value: method},
+				},
+				Samples: []prompb.Sample{},
+			}
+			timeSeriesMap[tsKey] = ts
+		}
+
+		// Add sample (cumulative count at this timestamp)
+		ts.Samples = append(ts.Samples, prompb.Sample{
+			Timestamp: createdAt.UnixMilli(),
+			Value:     float64(cumulativeCount),
+		})
+	}
+
+	// Convert map to slice
+	for _, ts := range timeSeriesMap {
+		result.Timeseries = append(result.Timeseries, ts)
+	}
+
+	return result
+}
+
 func main() {
 	if err := initDB(); err != nil {
 		log.Fatal(err)
@@ -550,6 +733,7 @@ func main() {
 	mux.HandleFunc("/makeCashPurchase", apiKeyMiddleware(cashPurchaseHandler))
 	mux.HandleFunc("/topUp", apiKeyMiddleware(topUpHandler))
 	mux.Handle("/metrics", promhttp.Handler())
+	mux.HandleFunc("/api/v1/read", remoteReadHandler) // Prometheus Remote Read endpoint (no auth required)
 
 	handler := corsMiddleware(mux)
 
