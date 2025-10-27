@@ -8,34 +8,43 @@ on:
       - '*'
   workflow_dispatch:
 
+env:
+  REGISTRY: ghcr.io
+
+permissions:
+  contents: read
+  packages: write
+  attestations: write
+  id-token: write
+
 jobs:
-  build-and-push:
+  build_and_push:
+    name: Build and Push
     runs-on: ubuntu-latest
-
-    permissions:
-      contents: read
-      packages: write
-      id-token: write
-
+    strategy:
+      fail-fast: false
+      matrix:
+        architecture:
+          - amd64
+          - arm64
     steps:
-      - name: Checkout source code
-        uses: actions/checkout@v4.1.1  # Renovate can track and update this
+      - name: Checkout the repository
+        uses: actions/checkout@v4.1.1
 
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3.2.0  # Pin to version for Renovate
-
-      - name: Log in to GitHub Container Registry
-        uses: docker/login-action@v3.1.0  # Pin for Renovate compatibility
+      - name: Setup Go
+        uses: actions/setup-go@v5
         with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+          go-version-file: 'go.mod'
+          cache-dependency-path: 'go.sum'
 
-      - name: Set up image tags
+      - name: Setup Docker Buildx
+        uses: docker/setup-buildx-action@v3.2.0
+
+      - name: Set up image metadata
         id: vars
         run: |
           REPO_LOWERCASE=${GITHUB_REPOSITORY,,}
-          IMAGE_NAME=ghcr.io/$REPO_LOWERCASE
+          IMAGE_NAME=${{ env.REGISTRY }}/$REPO_LOWERCASE
           COMMIT_TAG=${GITHUB_SHA::7}
           BRANCH_NAME=${GITHUB_REF#refs/heads/}
 
@@ -47,13 +56,111 @@ jobs:
           echo "branch_tag=$BRANCH_TAG" >> $GITHUB_OUTPUT
           echo "branch_name=$BRANCH_NAME" >> $GITHUB_OUTPUT
 
-      - name: Build and push Docker image (multi-platform)
-        uses: docker/build-push-action@v5.3.0  # Renovate-friendly
+      - name: Build cashless-server binary
+        run: go build -v -o cashless-server main.go
+        env:
+          CGO_ENABLED: 0
+          GOOS: linux
+          GOARCH: ${{ matrix.architecture }}
+
+      - name: Log into GitHub Container Registry
+        uses: docker/login-action@v3.1.0
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Get Docker metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ steps.vars.outputs.image_name }}
+
+      - name: Build and push Docker container
+        id: push
+        uses: docker/build-push-action@v5.3.0
         with:
           context: .
+          platforms: linux/${{ matrix.architecture }}
+          labels: ${{ steps.meta.outputs.labels }}
+          tags: ${{ steps.vars.outputs.image_name }}:temp-${{ steps.vars.outputs.branch_tag }}-${{ matrix.architecture }}
           push: true
-          platforms: linux/amd64,linux/arm64
-          tags: |
-            ${{ steps.vars.outputs.image_name }}:${{ steps.vars.outputs.branch_tag }}
-            ${{ steps.vars.outputs.image_name }}:sha-${{ steps.vars.outputs.commit_tag }}
-            ${{ steps.vars.outputs.branch_name == 'main' && format('{0}:latest', steps.vars.outputs.image_name) || '' }}
+
+      - name: Generate artifact attestation
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-name: ${{ steps.vars.outputs.image_name }}
+          subject-digest: ${{ steps.push.outputs.digest }}
+          push-to-registry: true
+
+      - name: Export digest
+        run: |
+          mkdir -p ${{ runner.temp }}/digests
+          digest="${{ steps.push.outputs.digest }}"
+          touch "${{ runner.temp }}/digests/${digest#sha256:}"
+
+      - name: Upload digest
+        uses: actions/upload-artifact@v4
+        with:
+          name: digests-linux-${{ matrix.architecture }}
+          path: ${{ runner.temp }}/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  merge_platform_containers:
+    name: Merge Platform Containers
+    runs-on: ubuntu-latest
+    needs: build_and_push
+    steps:
+      - name: Download digests
+        uses: actions/download-artifact@v4
+        with:
+          path: ${{ runner.temp }}/digests
+          pattern: digests-*
+          merge-multiple: true
+
+      - name: Set up image metadata
+        id: vars
+        run: |
+          REPO_LOWERCASE=${GITHUB_REPOSITORY,,}
+          IMAGE_NAME=${{ env.REGISTRY }}/$REPO_LOWERCASE
+          COMMIT_TAG=${GITHUB_SHA::7}
+          BRANCH_NAME=${GITHUB_REF#refs/heads/}
+
+          # Sanitize branch name for Docker tag (replace / with -)
+          BRANCH_TAG=${BRANCH_NAME//\//-}
+
+          echo "image_name=$IMAGE_NAME" >> $GITHUB_OUTPUT
+          echo "commit_tag=$COMMIT_TAG" >> $GITHUB_OUTPUT
+          echo "branch_tag=$BRANCH_TAG" >> $GITHUB_OUTPUT
+          echo "branch_name=$BRANCH_NAME" >> $GITHUB_OUTPUT
+
+      - name: Log into GitHub Container Registry
+        uses: docker/login-action@v3.1.0
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Setup Docker Buildx
+        uses: docker/setup-buildx-action@v3.2.0
+
+      - name: Create manifest list and push
+        working-directory: ${{ runner.temp }}/digests
+        run: |
+          # Build tag list
+          TAGS="-t ${{ steps.vars.outputs.image_name }}:${{ steps.vars.outputs.branch_tag }}"
+          TAGS="$TAGS -t ${{ steps.vars.outputs.image_name }}:sha-${{ steps.vars.outputs.commit_tag }}"
+
+          # Add latest tag only for main branch
+          if [ "${{ steps.vars.outputs.branch_name }}" = "main" ]; then
+            TAGS="$TAGS -t ${{ steps.vars.outputs.image_name }}:latest"
+          fi
+
+          # Create multi-arch manifest
+          docker buildx imagetools create $TAGS \
+            $(printf '${{ steps.vars.outputs.image_name }}@sha256:%s ' *)
+
+      - name: Inspect image
+        run: |
+          docker buildx imagetools inspect ${{ steps.vars.outputs.image_name }}:${{ steps.vars.outputs.branch_tag }}
