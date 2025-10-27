@@ -1,7 +1,6 @@
 package main
 
 import (
-	"database/sql"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -11,15 +10,63 @@ import (
 	"sync"
 	"time"
 
-	_ "github.com/lib/pq"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/prometheus/prometheus/prompb"
 	"github.com/prometheus/prometheus/storage/remote"
+	"gorm.io/driver/postgres"
+	"gorm.io/gorm"
+	"gorm.io/gorm/logger"
 )
 
-// ... (keep all your existing struct definitions)
+// GORM Models
+type User struct {
+	UID       string    `gorm:"primaryKey" json:"uid"`
+	CreatedAt time.Time `gorm:"default:CURRENT_TIMESTAMP" json:"created_at"`
+}
 
+type UserMachinePrivilege struct {
+	UID       string `gorm:"primaryKey" json:"uid"`
+	MachineID string `gorm:"primaryKey" json:"machine_id"`
+	FreeVend  bool   `gorm:"default:false" json:"free_vend"`
+}
+
+type VendVoucher struct {
+	ID        uint      `gorm:"primaryKey" json:"id"`
+	UID       string    `json:"uid"`
+	MachineID string    `json:"machine_id"`
+	Used      bool      `gorm:"default:false" json:"used"`
+	CreatedAt time.Time `gorm:"default:CURRENT_TIMESTAMP" json:"created_at"`
+}
+
+type TransactionModel struct {
+	ID            uint       `gorm:"primaryKey" json:"transaction_id"`
+	UID           *string    `json:"uid"`
+	Amount        int        `json:"amount"`
+	Product       string     `json:"product"`
+	Status        string     `json:"status"`
+	PaymentMethod string     `gorm:"column:payment_method" json:"payment_method"`
+	MachineID     string     `gorm:"column:machine_id" json:"machine_id"`
+	IsCash        bool       `gorm:"default:false" json:"is_cash"`
+	CreatedAt     time.Time  `gorm:"default:CURRENT_TIMESTAMP" json:"created_at"`
+}
+
+func (TransactionModel) TableName() string {
+	return "transactions"
+}
+
+type APIKey struct {
+	Key              string    `gorm:"primaryKey" json:"key"`
+	AllowedEndpoints string    `json:"allowed_endpoints"`
+	CreatedAt        time.Time `gorm:"default:CURRENT_TIMESTAMP" json:"created_at"`
+}
+
+type ProductMap struct {
+	ID          int    `gorm:"primaryKey" json:"id"`
+	ProductName string `json:"product_name"`
+}
+
+// Request/Response structs
 type Transaction struct {
 	ID        int       `json:"transaction_id"`
 	UID       *string   `json:"uid"`
@@ -77,7 +124,7 @@ type PrivilegeRequest struct {
 	FreeVend  bool   `json:"free_vend"`
 }
 
-var db *sql.DB
+var db *gorm.DB
 
 type PurchaseCollector struct {
 	purchaseDesc  *prometheus.Desc
@@ -125,8 +172,17 @@ func (c *PurchaseCollector) Collect(ch chan<- prometheus.Metric) {
 	if db == nil {
 		return
 	}
-	// Query for both count and FIRST transaction time per group
-	rows, err := db.Query(`
+
+	type MetricResult struct {
+		Product        string
+		MachineID      string
+		Method         string
+		Count          int64
+		FirstCreatedAt time.Time
+	}
+
+	var results []MetricResult
+	err := db.Raw(`
         SELECT
             COALESCE(product, '') as product,
             COALESCE(machine_id, '') as machine_id,
@@ -135,33 +191,27 @@ func (c *PurchaseCollector) Collect(ch chan<- prometheus.Metric) {
                 ELSE COALESCE(payment_method, 'unknown')
             END as method,
             COUNT(*) as count,
-            MIN(created_at) as first_created_at -- Use MIN, not MAX!
+            MIN(created_at) as first_created_at
         FROM transactions
         WHERE status = 'confirmed'
         AND amount < 0
         GROUP BY product, machine_id, is_cash, payment_method
-    `)
+    `).Scan(&results).Error
+
 	if err != nil {
 		log.Printf("Error querying purchase metrics: %v", err)
 		return
 	}
-	defer rows.Close()
-	for rows.Next() {
-		var product, machineID, method string
-		var count float64
-		var firstCreatedAt time.Time
-		if err := rows.Scan(&product, &machineID, &method, &count, &firstCreatedAt); err != nil {
-			log.Printf("Error scanning purchase metric row: %v", err)
-			continue
-		}
+
+	for _, result := range results {
 		// Get stable creation timestamp (cached after first encounter)
-		creationTime := c.getOrSetCreationTime(product, machineID, method, firstCreatedAt)
+		creationTime := c.getOrSetCreationTime(result.Product, result.MachineID, result.Method, result.FirstCreatedAt)
 		metric, err := prometheus.NewConstMetricWithCreatedTimestamp(
 			c.purchaseDesc,
 			prometheus.CounterValue,
-			count,
-			creationTime, // This is now stable!
-			product, machineID, method,
+			float64(result.Count),
+			creationTime,
+			result.Product, result.MachineID, result.Method,
 		)
 		if err != nil {
 			log.Printf("Error creating metric: %v", err)
@@ -176,8 +226,6 @@ func init() {
 }
 
 func initDB() error {
-	var err error
-
 	pgUser := os.Getenv("PG_USER")
 	pgPassword := os.Getenv("PG_PASSWORD")
 	pgDB := os.Getenv("PG_DBNAME")
@@ -187,62 +235,33 @@ func initDB() error {
 		return fmt.Errorf("Missing one or more PostgreSQL environment variables")
 	}
 
-	connStr := fmt.Sprintf("postgres://%s:%s@%s/%s?sslmode=disable", pgUser, pgPassword, pgHost, pgDB)
-	db, err = sql.Open("postgres", connStr)
+	dsn := fmt.Sprintf("host=%s user=%s password=%s dbname=%s sslmode=disable", pgHost, pgUser, pgPassword, pgDB)
+
+	var err error
+	db, err = gorm.Open(postgres.Open(dsn), &gorm.Config{
+		Logger: logger.Default.LogMode(logger.Silent),
+	})
 	if err != nil {
 		return err
 	}
 
-	tables := []string{
-		`CREATE TABLE IF NOT EXISTS users (
-		uid TEXT PRIMARY KEY,
-		created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-	);`,
-		`CREATE TABLE IF NOT EXISTS user_machine_privileges (
-		uid TEXT,
-		machine_id TEXT,
-		free_vend BOOLEAN DEFAULT FALSE,
-		PRIMARY KEY (uid, machine_id),
-		FOREIGN KEY (uid) REFERENCES users(uid)
-	);`,
-		`CREATE TABLE IF NOT EXISTS vend_vouchers (
-		id SERIAL PRIMARY KEY,
-		uid TEXT,
-		machine_id TEXT,
-		used BOOLEAN DEFAULT FALSE,
-		created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-		FOREIGN KEY (uid) REFERENCES users(uid)
-	);`,
-		`CREATE TABLE IF NOT EXISTS transactions (
-		id SERIAL PRIMARY KEY,
-		uid TEXT,
-		amount INTEGER NOT NULL,
-		product TEXT,
-		status TEXT,
-		payment_method TEXT,
-		machine_id TEXT,
-		is_cash BOOLEAN DEFAULT FALSE,
-		created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-	);`,
-		`CREATE TABLE IF NOT EXISTS api_keys (
-		key TEXT PRIMARY KEY,
-		allowed_endpoints TEXT, -- comma-separated list of paths
-		created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-	);`,
-		`CREATE TABLE IF NOT EXISTS product_map (
-		id INT PRIMARY KEY,
-		product_name TEXT
-	);`,
-		`CREATE INDEX IF NOT EXISTS idx_transactions_status ON transactions(status);`,
-		`CREATE INDEX IF NOT EXISTS idx_transactions_uid ON transactions(uid);`,
-		`CREATE INDEX IF NOT EXISTS idx_transactions_metrics ON transactions(status, amount, product, machine_id, is_cash, payment_method);`,
+	// Auto-migrate the schema
+	err = db.AutoMigrate(
+		&User{},
+		&UserMachinePrivilege{},
+		&VendVoucher{},
+		&TransactionModel{},
+		&APIKey{},
+		&ProductMap{},
+	)
+	if err != nil {
+		return err
 	}
 
-	for _, table := range tables {
-		if _, err = db.Exec(table); err != nil {
-			return err
-		}
-	}
+	// Create indexes manually (GORM doesn't handle composite indexes in AutoMigrate well)
+	db.Exec("CREATE INDEX IF NOT EXISTS idx_transactions_status ON transactions(status)")
+	db.Exec("CREATE INDEX IF NOT EXISTS idx_transactions_uid ON transactions(uid)")
+	db.Exec("CREATE INDEX IF NOT EXISTS idx_transactions_metrics ON transactions(status, amount, product, machine_id, is_cash, payment_method)")
 
 	return nil
 }
@@ -255,8 +274,8 @@ func apiKeyMiddleware(next http.HandlerFunc) http.HandlerFunc {
 			return
 		}
 
-		var allowedEndpoints string
-		err := db.QueryRow("SELECT allowed_endpoints FROM api_keys WHERE key = $1", apiKey).Scan(&allowedEndpoints)
+		var key APIKey
+		err := db.Where("key = ?", apiKey).First(&key).Error
 		if err != nil {
 			http.Error(w, "Invalid API key", http.StatusForbidden)
 			return
@@ -265,7 +284,7 @@ func apiKeyMiddleware(next http.HandlerFunc) http.HandlerFunc {
 		// Check if the requested path is allowed
 		requestedPath := r.URL.Path
 		allowed := false
-		for _, endpoint := range strings.Split(allowedEndpoints, ",") {
+		for _, endpoint := range strings.Split(key.AllowedEndpoints, ",") {
 			if strings.TrimSpace(endpoint) == requestedPath {
 				allowed = true
 				break
@@ -282,8 +301,9 @@ func apiKeyMiddleware(next http.HandlerFunc) http.HandlerFunc {
 }
 
 func ensureUser(uid string) error {
-	_, err := db.Exec(`INSERT INTO users (uid) VALUES ($1) ON CONFLICT DO NOTHING`, uid)
-	return err
+	user := User{UID: uid}
+	// FirstOrCreate will insert if not exists
+	return db.Where(User{UID: uid}).FirstOrCreate(&user).Error
 }
 
 func topUpHandler(w http.ResponseWriter, r *http.Request) {
@@ -303,20 +323,19 @@ func topUpHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	_, err := db.Exec(`
-		INSERT INTO users (uid) VALUES ($1)
-		ON CONFLICT (uid) DO NOTHING
-	`, req.UID)
-	if err != nil {
+	if err := ensureUser(req.UID); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 
-	_, err = db.Exec(`
-		INSERT INTO transactions (uid, amount, status, created_at, is_cash)
-		VALUES ($1, $2, 'confirmed', NOW(), false)
-	`, req.UID, req.Amount)
-	if err != nil {
+	transaction := TransactionModel{
+		UID:    &req.UID,
+		Amount: req.Amount,
+		Status: "confirmed",
+		IsCash: false,
+	}
+
+	if err := db.Create(&transaction).Error; err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -342,28 +361,29 @@ func cashPurchaseHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var txID int64
-	err := db.QueryRow(`
-		INSERT INTO transactions (amount, status, product, machine_id, created_at, is_cash)
-		VALUES ($1, 'confirmed', $2, $3, NOW(), true)
-		RETURNING id
-	`, -purchase.Amount, get_product_name(purchase.Product), purchase.MachineID).Scan(&txID)
+	transaction := TransactionModel{
+		Amount:    -purchase.Amount,
+		Status:    "confirmed",
+		Product:   get_product_name(purchase.Product),
+		MachineID: purchase.MachineID,
+		IsCash:    true,
+	}
 
-	if err != nil {
+	if err := db.Create(&transaction).Error; err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
-	json.NewEncoder(w).Encode(map[string]interface{}{"transaction_id": txID})
+	json.NewEncoder(w).Encode(map[string]interface{}{"transaction_id": transaction.ID})
 }
 
 func get_product_name(id int) string {
-	var productName string
-	err := db.QueryRow(`SELECT product_name FROM product_map WHERE id = $1`, id).Scan(&productName)
+	var product ProductMap
+	err := db.Where("id = ?", id).First(&product).Error
 	if err == nil {
-		return productName
+		return product.ProductName
 	}
 	return fmt.Sprintf("%d", id)
 }
@@ -391,56 +411,70 @@ func makePurchaseHandler(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		var freeVend bool
-		err := db.QueryRow(`SELECT free_vend FROM user_machine_privileges WHERE uid = $1 AND machine_id = $2`, *req.UID, req.MachineID).Scan(&freeVend)
-		if err == nil && freeVend {
+		// Check for free vend privilege
+		var privilege UserMachinePrivilege
+		err := db.Where("uid = ? AND machine_id = ?", *req.UID, req.MachineID).First(&privilege).Error
+		if err == nil && privilege.FreeVend {
 			req.Amount = 0
 		} else {
-			var voucherID int
-			err := db.QueryRow(`SELECT id FROM vend_vouchers WHERE uid = $1 AND machine_id = $2 AND used = FALSE LIMIT 1`, *req.UID, req.MachineID).Scan(&voucherID)
+			// Check for unused vouchers
+			var voucher VendVoucher
+			err := db.Where("uid = ? AND machine_id = ? AND used = ?", *req.UID, req.MachineID, false).First(&voucher).Error
 			if err == nil {
 				req.Amount = 0
 				useVoucher = true
 			}
 		}
 
-		var balance int
-		db.QueryRow(`SELECT COALESCE(SUM(amount), 0) FROM transactions WHERE uid = $1 AND status = 'confirmed'`, *req.UID).Scan(&balance)
-		if balance < req.Amount {
+		// Check balance
+		var balanceResult struct {
+			Balance int
+		}
+		db.Model(&TransactionModel{}).
+			Select("COALESCE(SUM(amount), 0) as balance").
+			Where("uid = ? AND status = ?", *req.UID, "confirmed").
+			Scan(&balanceResult)
+
+		if balanceResult.Balance < req.Amount {
 			http.Error(w, "Insufficient balance", http.StatusForbidden)
 			return
 		}
 	}
 
-	var txID int64
-	err := db.QueryRow(`
-		INSERT INTO transactions (uid, amount, product, status, payment_method, machine_id)
-		VALUES ($1, $2, $3, 'pending', $4, $5)
-		RETURNING id`,
-		req.UID,
-		-req.Amount,
-		get_product_name(req.Product),
-		ternary(req.UID == nil, "cash", "digital"),
-		req.MachineID,
-	).Scan(&txID)
-	if err != nil {
+	// Create pending transaction
+	transaction := TransactionModel{
+		UID:           req.UID,
+		Amount:        -req.Amount,
+		Product:       get_product_name(req.Product),
+		Status:        "pending",
+		PaymentMethod: ternary(req.UID == nil, "cash", "digital"),
+		MachineID:     req.MachineID,
+	}
+
+	if err := db.Create(&transaction).Error; err != nil {
 		http.Error(w, "Insert failed", http.StatusInternalServerError)
 		return
 	}
 
+	// Mark voucher as used if applicable
 	if useVoucher {
-		//_, _ = db.Exec(`UPDATE vend_vouchers SET used = TRUE WHERE uid = $1 AND machine_id = $2 AND used = FALSE LIMIT 1`, *req.UID, req.MachineID)
-		_, _ = db.Exec(`UPDATE vend_vouchers SET used = TRUE WHERE id = (SELECT id FROM vend_vouchers WHERE uid = $1 AND machine_id = $2 AND used = FALSE LIMIT 1)`, *req.UID, req.MachineID) //potential fix for voucher issue
+		db.Model(&VendVoucher{}).
+			Where("uid = ? AND machine_id = ? AND used = ?", *req.UID, req.MachineID, false).
+			Order("id ASC").
+			Limit(1).
+			Update("used", true)
 	}
 
 	// Set timeout for pending transactions
-	go func(txID int64) {
+	go func(txID uint) {
 		time.Sleep(60 * time.Second)
-		db.Exec(`UPDATE transactions SET status = 'failed' WHERE id = $1 AND status = 'pending'`, txID)
-	}(txID)
+		db.Model(&TransactionModel{}).
+			Where("id = ? AND status = ?", txID, "pending").
+			Update("status", "failed")
+	}(transaction.ID)
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]interface{}{"transaction_id": txID})
+	json.NewEncoder(w).Encode(map[string]interface{}{"transaction_id": transaction.ID})
 }
 
 func confirmPurchaseHandler(w http.ResponseWriter, r *http.Request) {
@@ -450,13 +484,16 @@ func confirmPurchaseHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	res, err := db.Exec(`UPDATE transactions SET status = 'confirmed' WHERE id = $1 AND status = 'pending'`, req.TransactionID)
-	if err != nil {
+	result := db.Model(&TransactionModel{}).
+		Where("id = ? AND status = ?", req.TransactionID, "pending").
+		Update("status", "confirmed")
+
+	if result.Error != nil {
 		http.Error(w, "Database error", http.StatusInternalServerError)
 		return
 	}
-	rows, _ := res.RowsAffected()
-	if rows == 0 {
+
+	if result.RowsAffected == 0 {
 		http.Error(w, "Transaction not found or already processed", http.StatusNotFound)
 		return
 	}
@@ -471,9 +508,15 @@ func getBalanceHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var balance int
-	db.QueryRow(`SELECT COALESCE(SUM(amount), 0) FROM transactions WHERE uid = $1 AND status = 'confirmed'`, req.UID).Scan(&balance)
-	json.NewEncoder(w).Encode(Balance{UID: req.UID, Balance: balance})
+	var balanceResult struct {
+		Balance int
+	}
+	db.Model(&TransactionModel{}).
+		Select("COALESCE(SUM(amount), 0) as balance").
+		Where("uid = ? AND status = ?", req.UID, "confirmed").
+		Scan(&balanceResult)
+
+	json.NewEncoder(w).Encode(Balance{UID: req.UID, Balance: balanceResult.Balance})
 }
 
 func createUserHandler(w http.ResponseWriter, r *http.Request) {
@@ -501,8 +544,13 @@ func createVoucherHandler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	_, err = db.Exec(`INSERT INTO vend_vouchers (uid, machine_id) VALUES ($1, $2)`, req.UID, req.MachineID)
-	if err != nil {
+
+	voucher := VendVoucher{
+		UID:       req.UID,
+		MachineID: req.MachineID,
+	}
+
+	if err := db.Create(&voucher).Error; err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -520,11 +568,15 @@ func createPrivilegeHandler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	_, err = db.Exec(`
-		INSERT INTO user_machine_privileges (uid, machine_id, free_vend)
-		VALUES ($1, $2, $3)
-		ON CONFLICT (uid, machine_id) DO UPDATE SET free_vend = EXCLUDED.free_vend`, req.UID, req.MachineID, req.FreeVend)
-	if err != nil {
+
+	privilege := UserMachinePrivilege{
+		UID:       req.UID,
+		MachineID: req.MachineID,
+		FreeVend:  req.FreeVend,
+	}
+
+	// Use Clauses to handle ON CONFLICT
+	if err := db.Save(&privilege).Error; err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -635,56 +687,51 @@ func executeRemoteReadQuery(query *prompb.Query) *prompb.QueryResult {
 		FROM transactions
 		WHERE status = 'confirmed'
 		AND amount < 0
-		AND EXTRACT(EPOCH FROM created_at) * 1000 BETWEEN $1 AND $2
+		AND EXTRACT(EPOCH FROM created_at) * 1000 BETWEEN ? AND ?
 	`
 
 	args := []interface{}{startMs, endMs}
-	argIdx := 3
 
 	if productFilter != "" {
-		sqlQuery += fmt.Sprintf(" AND product = $%d", argIdx)
+		sqlQuery += " AND product = ?"
 		args = append(args, productFilter)
-		argIdx++
 	}
 	if machineFilter != "" {
-		sqlQuery += fmt.Sprintf(" AND machine_id = $%d", argIdx)
+		sqlQuery += " AND machine_id = ?"
 		args = append(args, machineFilter)
-		argIdx++
 	}
 	if methodFilter != "" {
 		if methodFilter == "cash" {
 			sqlQuery += " AND is_cash = true"
 		} else {
-			sqlQuery += fmt.Sprintf(" AND is_cash = false AND payment_method = $%d", argIdx)
+			sqlQuery += " AND is_cash = false AND payment_method = ?"
 			args = append(args, methodFilter)
-			argIdx++
 		}
 	}
 
 	sqlQuery += " ORDER BY product, machine_id, is_cash, payment_method, created_at"
 
-	rows, err := db.Query(sqlQuery, args...)
+	type RemoteReadRow struct {
+		Product         string
+		MachineID       string
+		Method          string
+		CreatedAt       time.Time
+		CumulativeCount int64
+	}
+
+	var rows []RemoteReadRow
+	err := db.Raw(sqlQuery, args...).Scan(&rows).Error
 	if err != nil {
 		log.Printf("Error querying remote read data: %v", err)
 		return result
 	}
-	defer rows.Close()
 
 	// Group samples by time series (product, machine_id, method)
 	timeSeriesMap := make(map[string]*prompb.TimeSeries)
 
-	for rows.Next() {
-		var product, machineID, method string
-		var createdAt time.Time
-		var cumulativeCount int64
-
-		if err := rows.Scan(&product, &machineID, &method, &createdAt, &cumulativeCount); err != nil {
-			log.Printf("Error scanning remote read row: %v", err)
-			continue
-		}
-
+	for _, row := range rows {
 		// Create time series key
-		tsKey := fmt.Sprintf("%s|%s|%s", product, machineID, method)
+		tsKey := fmt.Sprintf("%s|%s|%s", row.Product, row.MachineID, row.Method)
 
 		// Get or create time series
 		ts, exists := timeSeriesMap[tsKey]
@@ -692,9 +739,9 @@ func executeRemoteReadQuery(query *prompb.Query) *prompb.QueryResult {
 			ts = &prompb.TimeSeries{
 				Labels: []prompb.Label{
 					{Name: "__name__", Value: "purchases_historical_total"},
-					{Name: "product", Value: product},
-					{Name: "machine_id", Value: machineID},
-					{Name: "method", Value: method},
+					{Name: "product", Value: row.Product},
+					{Name: "machine_id", Value: row.MachineID},
+					{Name: "method", Value: row.Method},
 				},
 				Samples: []prompb.Sample{},
 			}
@@ -703,8 +750,8 @@ func executeRemoteReadQuery(query *prompb.Query) *prompb.QueryResult {
 
 		// Add sample (cumulative count at this timestamp)
 		ts.Samples = append(ts.Samples, prompb.Sample{
-			Timestamp: createdAt.UnixMilli(),
-			Value:     float64(cumulativeCount),
+			Timestamp: row.CreatedAt.UnixMilli(),
+			Value:     float64(row.CumulativeCount),
 		})
 	}
 
@@ -720,7 +767,13 @@ func main() {
 	if err := initDB(); err != nil {
 		log.Fatal(err)
 	}
-	defer db.Close()
+
+	// Get underlying SQL DB for connection management
+	sqlDB, err := db.DB()
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer sqlDB.Close()
 
 	mux := http.NewServeMux()
 
