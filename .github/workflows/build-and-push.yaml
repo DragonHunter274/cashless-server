@@ -4,6 +4,8 @@ on:
   push:
     branches:
       - main
+      - gorm
+      - '*'
   workflow_dispatch:
 
 jobs:
@@ -35,8 +37,15 @@ jobs:
           REPO_LOWERCASE=${GITHUB_REPOSITORY,,}
           IMAGE_NAME=ghcr.io/$REPO_LOWERCASE
           COMMIT_TAG=${GITHUB_SHA::7}
+          BRANCH_NAME=${GITHUB_REF#refs/heads/}
+
+          # Sanitize branch name for Docker tag (replace / with -)
+          BRANCH_TAG=${BRANCH_NAME//\//-}
+
           echo "image_name=$IMAGE_NAME" >> $GITHUB_OUTPUT
           echo "commit_tag=$COMMIT_TAG" >> $GITHUB_OUTPUT
+          echo "branch_tag=$BRANCH_TAG" >> $GITHUB_OUTPUT
+          echo "branch_name=$BRANCH_NAME" >> $GITHUB_OUTPUT
 
       - name: Build and push Docker image (multi-platform)
         uses: docker/build-push-action@v5.3.0  # Renovate-friendly
@@ -45,4 +54,6 @@ jobs:
           push: true
           platforms: linux/amd64,linux/arm64
           tags: |
-            ${{ steps.vars.outputs.image_name }}:latest
+            ${{ steps.vars.outputs.image_name }}:${{ steps.vars.outputs.branch_tag }}
+            ${{ steps.vars.outputs.image_name }}:sha-${{ steps.vars.outputs.commit_tag }}
+            ${{ steps.vars.outputs.branch_name == 'main' && format('{0}:latest', steps.vars.outputs.image_name) || '' }}
