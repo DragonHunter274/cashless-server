@@ -1,27 +1,15 @@
 # syntax=docker/dockerfile:1
 
-FROM golang:1.23
+FROM gcr.io/distroless/static-debian12:nonroot
 
-# Set destination for COPY
+# Set working directory
 WORKDIR /app
 
-# Download Go modules
-COPY go.mod go.sum ./
-RUN go mod download
+# Copy pre-built binary from build context
+COPY cashless-server /app/cashless-server
 
-# Copy the source code. Note the slash at the end, as explained in
-# https://docs.docker.com/reference/dockerfile/#copy
-COPY *.go ./
-
-# Build
-RUN CGO_ENABLED=0 GOOS=linux go build -o /docker-cashless-server
-
-# Optional:
-# To bind to a TCP port, runtime parameters must be supplied to the docker command.
-# But we can document in the Dockerfile what ports
-# the application is going to listen on by default.
-# https://docs.docker.com/reference/dockerfile/#expose
+# Expose port
 EXPOSE 8080
 
-# Run
-CMD ["/docker-cashless-server"]
+# Run the binary
+CMD ["/app/cashless-server"]
