@@ -1,15 +1,22 @@
 package main
 
 import (
+	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
+	"flag"
 	"fmt"
 	"log"
 	"net/http"
 	"os"
+	"os/signal"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
+	embeddedpostgres "github.com/fergusstrange/embedded-postgres"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/prometheus/prometheus/prompb"
@@ -107,6 +114,12 @@ type BalanceRequest struct {
 type Balance struct {
 	Balance int    `json:"balance"`
 	UID     string `json:"uid"`
+}
+
+type TransactionsRequest struct {
+	UID    string `json:"uid"`    // Optional: filter by user
+	Limit  int    `json:"limit"`  // Optional: limit results (default 100)
+	Offset int    `json:"offset"` // Optional: offset for pagination
 }
 
 type UserRequest struct {
@@ -225,6 +238,14 @@ func init() {
 	prometheus.MustRegister(NewPurchaseCollector())
 }
 
+func generateAPIKey() string {
+	bytes := make([]byte, 32)
+	if _, err := rand.Read(bytes); err != nil {
+		log.Fatal("Failed to generate API key:", err)
+	}
+	return hex.EncodeToString(bytes)
+}
+
 func initDB() error {
 	pgUser := os.Getenv("PG_USER")
 	pgPassword := os.Getenv("PG_PASSWORD")
@@ -264,6 +285,49 @@ func initDB() error {
 	db.Exec("CREATE INDEX IF NOT EXISTS idx_transactions_metrics ON transactions(status, amount, product, machine_id, is_cash, payment_method)")
 
 	return nil
+}
+
+func setupTestMode() (*embeddedpostgres.EmbeddedPostgres, string, error) {
+	log.Println("Starting in TEST MODE with embedded PostgreSQL...")
+
+	// Start embedded PostgreSQL on port 5434 to avoid conflicts
+	embeddedPG := embeddedpostgres.NewDatabase(embeddedpostgres.DefaultConfig().
+		Port(5434).
+		Database("cashless_test").
+		Username("postgres").
+		Password("postgres"))
+
+	if err := embeddedPG.Start(); err != nil {
+		return nil, "", fmt.Errorf("failed to start embedded PostgreSQL: %v", err)
+	}
+
+	// Set environment variables for database connection
+	os.Setenv("PG_USER", "postgres")
+	os.Setenv("PG_PASSWORD", "postgres")
+	os.Setenv("PG_DBNAME", "cashless_test")
+	os.Setenv("PG_HOST", "localhost port=5434")
+
+	// Wait for PostgreSQL to be ready
+	time.Sleep(2 * time.Second)
+
+	// Initialize database
+	if err := initDB(); err != nil {
+		embeddedPG.Stop()
+		return nil, "", fmt.Errorf("failed to initialize database: %v", err)
+	}
+
+	// Generate and create API key
+	apiKey := generateAPIKey()
+	key := APIKey{
+		Key:              apiKey,
+		AllowedEndpoints: "/makePurchase,/confirmPurchase,/makeCashPurchase,/getBalance,/getTransactions,/getVouchers,/getPrivileges,/topUp,/createUser,/createVoucher,/createPrivilege",
+	}
+	if err := db.Create(&key).Error; err != nil {
+		embeddedPG.Stop()
+		return nil, "", fmt.Errorf("failed to create API key: %v", err)
+	}
+
+	return embeddedPG, apiKey, nil
 }
 
 func apiKeyMiddleware(next http.HandlerFunc) http.HandlerFunc {
@@ -519,6 +583,106 @@ func getBalanceHandler(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(Balance{UID: req.UID, Balance: balanceResult.Balance})
 }
 
+func getTransactionsHandler(w http.ResponseWriter, r *http.Request) {
+	var req TransactionsRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "Invalid request", http.StatusBadRequest)
+		return
+	}
+
+	// Set default limit if not provided
+	if req.Limit <= 0 {
+		req.Limit = 100
+	}
+
+	// Cap maximum limit at 1000
+	if req.Limit > 1000 {
+		req.Limit = 1000
+	}
+
+	query := db.Model(&TransactionModel{}).Order("created_at DESC")
+
+	// Filter by UID if provided
+	if req.UID != "" {
+		query = query.Where("uid = ?", req.UID)
+	}
+
+	// Apply pagination
+	query = query.Limit(req.Limit).Offset(req.Offset)
+
+	var transactions []TransactionModel
+	if err := query.Find(&transactions).Error; err != nil {
+		http.Error(w, "Error fetching transactions: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	// Convert to response format
+	var response []Transaction
+	for _, t := range transactions {
+		response = append(response, Transaction{
+			ID:        int(t.ID),
+			UID:       t.UID,
+			Amount:    t.Amount,
+			Product:   t.Product,
+			Status:    t.Status,
+			Method:    t.PaymentMethod,
+			MachineID: t.MachineID,
+			CreatedAt: t.CreatedAt,
+		})
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(response)
+}
+
+func getVouchersHandler(w http.ResponseWriter, r *http.Request) {
+	var req UserRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "Invalid request", http.StatusBadRequest)
+		return
+	}
+
+	query := db.Model(&VendVoucher{})
+
+	// Filter by UID if provided
+	if req.UID != "" {
+		query = query.Where("uid = ?", req.UID)
+	}
+
+	var vouchers []VendVoucher
+	if err := query.Order("created_at DESC").Find(&vouchers).Error; err != nil {
+		http.Error(w, "Error fetching vouchers: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(vouchers)
+}
+
+func getPrivilegesHandler(w http.ResponseWriter, r *http.Request) {
+	var req UserRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "Invalid request", http.StatusBadRequest)
+		return
+	}
+
+	query := db.Model(&UserMachinePrivilege{})
+
+	// Filter by UID if provided
+	if req.UID != "" {
+		query = query.Where("uid = ?", req.UID)
+	}
+
+	var privileges []UserMachinePrivilege
+	if err := query.Find(&privileges).Error; err != nil {
+		http.Error(w, "Error fetching privileges: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(privileges)
+}
+
 func createUserHandler(w http.ResponseWriter, r *http.Request) {
 	var req UserRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.UID == "" {
@@ -630,6 +794,42 @@ func remoteReadHandler(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// Helper function to check if a time series matches label matchers
+func matchesLabels(ts *prompb.TimeSeries, matchers []*prompb.LabelMatcher) bool {
+	labelMap := make(map[string]string)
+	for _, label := range ts.Labels {
+		labelMap[label.Name] = label.Value
+	}
+
+	for _, matcher := range matchers {
+		value, exists := labelMap[matcher.Name]
+		if !exists {
+			value = ""
+		}
+
+		switch matcher.Type {
+		case prompb.LabelMatcher_EQ:
+			if value != matcher.Value {
+				return false
+			}
+		case prompb.LabelMatcher_NEQ:
+			if value == matcher.Value {
+				return false
+			}
+		case prompb.LabelMatcher_RE:
+			// Simple regex match for common patterns
+			if !strings.Contains(value, matcher.Value) {
+				return false
+			}
+		case prompb.LabelMatcher_NRE:
+			if strings.Contains(value, matcher.Value) {
+				return false
+			}
+		}
+	}
+	return true
+}
+
 // Execute a single remote read query against the database
 func executeRemoteReadQuery(query *prompb.Query) *prompb.QueryResult {
 	result := &prompb.QueryResult{
@@ -663,13 +863,33 @@ func executeRemoteReadQuery(query *prompb.Query) *prompb.QueryResult {
 		}
 	}
 
+	// Debug: Log all matchers received from Prometheus
+	log.Printf("Remote read query - Matchers: %d total", len(query.Matchers))
+	for i, matcher := range query.Matchers {
+		matcherType := "UNKNOWN"
+		switch matcher.Type {
+		case prompb.LabelMatcher_EQ:
+			matcherType = "=="
+		case prompb.LabelMatcher_NEQ:
+			matcherType = "!="
+		case prompb.LabelMatcher_RE:
+			matcherType = "=~"
+		case prompb.LabelMatcher_NRE:
+			matcherType = "!~"
+		}
+		log.Printf("  Matcher %d: %s %s %q", i, matcher.Name, matcherType, matcher.Value)
+	}
+
 	// Only process if this query is for our metric
 	if !matchesMetricName {
+		log.Printf("Query does not match metric name, returning empty result")
 		return result
 	}
 
 	// Build SQL query with optional filters
 	// This query returns cumulative counts over time for each product/machine/method combination
+	// We need to get ALL transactions up to endMs to calculate proper cumulative counts,
+	// but we'll filter to the query range after getting the baseline
 	sqlQuery := `
 		SELECT
 			COALESCE(product, '') as product,
@@ -687,10 +907,10 @@ func executeRemoteReadQuery(query *prompb.Query) *prompb.QueryResult {
 		FROM transactions
 		WHERE status = 'confirmed'
 		AND amount < 0
-		AND EXTRACT(EPOCH FROM created_at) * 1000 BETWEEN ? AND ?
+		AND EXTRACT(EPOCH FROM created_at) * 1000 <= ?
 	`
 
-	args := []interface{}{startMs, endMs}
+	args := []interface{}{endMs}
 
 	if productFilter != "" {
 		sqlQuery += " AND product = ?"
@@ -755,17 +975,160 @@ func executeRemoteReadQuery(query *prompb.Query) *prompb.QueryResult {
 		})
 	}
 
-	// Convert map to slice
+	// Process samples and add interpolated points for proper counter visualization
 	for _, ts := range timeSeriesMap {
-		result.Timeseries = append(result.Timeseries, ts)
+		if len(ts.Samples) == 0 {
+			continue
+		}
+
+		// Find the baseline value (count at startMs) and samples within range
+		var baselineValue float64 = 0
+		var filteredSamples []prompb.Sample
+
+		for _, sample := range ts.Samples {
+			if sample.Timestamp < startMs {
+				// Track the counter value just before our query range
+				baselineValue = sample.Value
+			} else {
+				// This sample is within our query range
+				filteredSamples = append(filteredSamples, sample)
+			}
+		}
+
+		// Skip time series with no transactions in the query range
+		// This hides products that had no purchases during the selected time period
+		if len(filteredSamples) == 0 {
+			continue
+		}
+
+		// Calculate step interval for interpolation
+		// Match Prometheus scrape interval (typically 1 minute) for short ranges,
+		// but use larger intervals for longer ranges to avoid too many points
+		rangeMs := endMs - startMs
+		var stepMs int64
+
+		if rangeMs > 30*24*60*60*1000 { // > 30 days
+			stepMs = 60 * 60 * 1000 // 1 hour
+		} else if rangeMs > 7*24*60*60*1000 { // > 7 days
+			stepMs = 15 * 60 * 1000 // 15 minutes
+		} else if rangeMs > 24*60*60*1000 { // > 1 day
+			stepMs = 5 * 60 * 1000 // 5 minutes
+		} else if rangeMs > 6*60*60*1000 { // > 6 hours
+			stepMs = 2 * 60 * 1000 // 2 minutes
+		} else {
+			stepMs = 60 * 1000 // 1 minute for < 6 hours
+		}
+
+		// Build a merged list of interpolated points AND actual transaction times
+		var allSampleTimes []int64
+		timeMap := make(map[int64]bool)
+
+		// Add regular interval times
+		for t := startMs; t <= endMs; t += stepMs {
+			allSampleTimes = append(allSampleTimes, t)
+			timeMap[t] = true
+		}
+
+		// Add actual transaction times if not already present
+		for _, sample := range filteredSamples {
+			if !timeMap[sample.Timestamp] {
+				allSampleTimes = append(allSampleTimes, sample.Timestamp)
+				timeMap[sample.Timestamp] = true
+			}
+		}
+
+		// Always include start and end
+		if !timeMap[startMs] {
+			allSampleTimes = append(allSampleTimes, startMs)
+		}
+		if !timeMap[endMs] {
+			allSampleTimes = append(allSampleTimes, endMs)
+		}
+
+		// Sort all times
+		sortInt64Slice(allSampleTimes)
+
+		// Generate samples at all these times
+		var interpolatedSamples []prompb.Sample
+		currentValue := baselineValue
+		sampleIdx := 0
+
+		for _, timestamp := range allSampleTimes {
+			// Update value based on any transactions up to this point
+			for sampleIdx < len(filteredSamples) && filteredSamples[sampleIdx].Timestamp <= timestamp {
+				currentValue = filteredSamples[sampleIdx].Value
+				sampleIdx++
+			}
+
+			interpolatedSamples = append(interpolatedSamples, prompb.Sample{
+				Timestamp: timestamp,
+				Value:     currentValue,
+			})
+		}
+
+		if len(interpolatedSamples) > 0 {
+			ts.Samples = interpolatedSamples
+
+			// Apply label matchers to filter time series
+			if matchesLabels(ts, query.Matchers) {
+				result.Timeseries = append(result.Timeseries, ts)
+			} else {
+				// Debug: Log why this time series was filtered out
+				var productLabel string
+				for _, label := range ts.Labels {
+					if label.Name == "product" {
+						productLabel = label.Value
+						break
+					}
+				}
+				log.Printf("  Filtered out time series: product=%s (didn't match matchers)", productLabel)
+			}
+		}
 	}
 
+	log.Printf("Returning %d time series after filtering", len(result.Timeseries))
 	return result
 }
 
+// Helper function to sort int64 slices
+func sortInt64Slice(slice []int64) {
+	for i := 0; i < len(slice); i++ {
+		for j := i + 1; j < len(slice); j++ {
+			if slice[i] > slice[j] {
+				slice[i], slice[j] = slice[j], slice[i]
+			}
+		}
+	}
+}
+
 func main() {
-	if err := initDB(); err != nil {
-		log.Fatal(err)
+	// Parse command-line flags
+	testMode := flag.Bool("test", false, "Run in test mode with embedded PostgreSQL")
+	flag.Parse()
+
+	var embeddedPG *embeddedpostgres.EmbeddedPostgres
+	var apiKey string
+
+	if *testMode {
+		var err error
+		embeddedPG, apiKey, err = setupTestMode()
+		if err != nil {
+			log.Fatal(err)
+		}
+
+		// Display API key prominently
+		log.Println("================================================================================")
+		log.Println("TEST MODE ACTIVE - Embedded PostgreSQL running on port 5434")
+		log.Println("================================================================================")
+		log.Println("API Key for Web UI:")
+		log.Println(apiKey)
+		log.Println("================================================================================")
+		log.Println("Copy the API key above and paste it into the web UI at http://localhost:8080")
+		log.Println("================================================================================")
+	} else {
+		if err := initDB(); err != nil {
+			log.Fatal(err)
+		}
 	}
 
 	// Get underlying SQL DB for connection management
@@ -780,6 +1143,9 @@ func main() {
 	mux.HandleFunc("/makePurchase", apiKeyMiddleware(makePurchaseHandler))
 	mux.HandleFunc("/confirmPurchase", apiKeyMiddleware(confirmPurchaseHandler))
 	mux.HandleFunc("/getBalance", apiKeyMiddleware(getBalanceHandler))
+	mux.HandleFunc("/getTransactions", apiKeyMiddleware(getTransactionsHandler))
+	mux.HandleFunc("/getVouchers", apiKeyMiddleware(getVouchersHandler))
+	mux.HandleFunc("/getPrivileges", apiKeyMiddleware(getPrivilegesHandler))
 	mux.HandleFunc("/createUser", apiKeyMiddleware(createUserHandler))
 	mux.HandleFunc("/createVoucher", apiKeyMiddleware(createVoucherHandler))
 	mux.HandleFunc("/createPrivilege", apiKeyMiddleware(createPrivilegeHandler))
@@ -788,8 +1154,51 @@ func main() {
 	mux.Handle("/metrics", promhttp.Handler())
 	mux.HandleFunc("/api/v1/read", remoteReadHandler) // Prometheus Remote Read endpoint (no auth required)
 
+	// Serve static files from the static directory
+	fs := http.FileServer(http.Dir("./static"))
+	mux.Handle("/", fs)
+
 	handler := corsMiddleware(mux)
 
-	log.Println("Server started on :8080")
-	log.Fatal(http.ListenAndServe(":8080", handler))
+	// Create HTTP server with graceful shutdown support
+	server := &http.Server{
+		Addr:    ":8080",
+		Handler: handler,
+	}
+
+	// Setup signal handling for graceful shutdown
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
+
+	// Start server in a goroutine
+	go func() {
+		log.Println("Server started on :8080")
+		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			log.Fatal(err)
+		}
+	}()
+
+	// Wait for interrupt signal
+	<-sigChan
+	log.Println("\nShutting down gracefully...")
+
+	// Shutdown HTTP server with timeout
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	if err := server.Shutdown(ctx); err != nil {
+		log.Printf("Server shutdown error: %v", err)
+	}
+
+	// Stop embedded PostgreSQL if running in test mode
+	if embeddedPG != nil {
+		log.Println("Stopping embedded PostgreSQL...")
+		if err := embeddedPG.Stop(); err != nil {
+			log.Printf("Error stopping embedded PostgreSQL: %v", err)
+		} else {
+			log.Println("Embedded PostgreSQL stopped successfully")
+		}
+	}
+
+	log.Println("Server stopped")
 }
