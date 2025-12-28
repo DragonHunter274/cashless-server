@@ -1,0 +1,848 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Cashless Server Management</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+        }
+
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+        }
+
+        header {
+            background: white;
+            border-radius: 10px;
+            padding: 20px 30px;
+            margin-bottom: 20px;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+        }
+
+        h1 {
+            color: #333;
+            font-size: 28px;
+            margin-bottom: 10px;
+        }
+
+        .api-key-section {
+            margin-top: 15px;
+            padding-top: 15px;
+            border-top: 1px solid #eee;
+        }
+
+        .api-key-section label {
+            display: block;
+            margin-bottom: 5px;
+            font-weight: 600;
+            color: #555;
+        }
+
+        .api-key-section input {
+            width: 100%;
+            padding: 10px;
+            border: 2px solid #ddd;
+            border-radius: 5px;
+            font-size: 14px;
+        }
+
+        .tabs {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 20px;
+            flex-wrap: wrap;
+        }
+
+        .tab-button {
+            background: white;
+            border: none;
+            padding: 12px 24px;
+            border-radius: 8px;
+            cursor: pointer;
+            font-size: 16px;
+            font-weight: 600;
+            color: #667eea;
+            transition: all 0.3s;
+            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+        }
+
+        .tab-button:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 4px 8px rgba(0, 0, 0, 0.15);
+        }
+
+        .tab-button.active {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+        }
+
+        .tab-content {
+            display: none;
+            background: white;
+            border-radius: 10px;
+            padding: 30px;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+        }
+
+        .tab-content.active {
+            display: block;
+        }
+
+        .form-group {
+            margin-bottom: 20px;
+        }
+
+        .form-group label {
+            display: block;
+            margin-bottom: 5px;
+            font-weight: 600;
+            color: #333;
+        }
+
+        .form-group input,
+        .form-group select {
+            width: 100%;
+            padding: 10px;
+            border: 2px solid #ddd;
+            border-radius: 5px;
+            font-size: 14px;
+        }
+
+        .form-group input:focus,
+        .form-group select:focus {
+            outline: none;
+            border-color: #667eea;
+        }
+
+        .btn {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border: none;
+            padding: 12px 30px;
+            border-radius: 5px;
+            cursor: pointer;
+            font-size: 16px;
+            font-weight: 600;
+            transition: all 0.3s;
+        }
+
+        .btn:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 4px 8px rgba(0, 0, 0, 0.2);
+        }
+
+        .btn:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+            transform: none;
+        }
+
+        .btn-secondary {
+            background: #6c757d;
+            margin-left: 10px;
+        }
+
+        .result {
+            margin-top: 20px;
+            padding: 15px;
+            border-radius: 5px;
+            display: none;
+        }
+
+        .result.success {
+            background: #d4edda;
+            border: 1px solid #c3e6cb;
+            color: #155724;
+        }
+
+        .result.error {
+            background: #f8d7da;
+            border: 1px solid #f5c6cb;
+            color: #721c24;
+        }
+
+        .result.info {
+            background: #d1ecf1;
+            border: 1px solid #bee5eb;
+            color: #0c5460;
+        }
+
+        .grid-2 {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 20px;
+        }
+
+        .section {
+            margin-bottom: 30px;
+        }
+
+        .section h2 {
+            color: #333;
+            margin-bottom: 15px;
+            font-size: 20px;
+            border-bottom: 2px solid #667eea;
+            padding-bottom: 10px;
+        }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 15px;
+        }
+
+        th, td {
+            padding: 12px;
+            text-align: left;
+            border-bottom: 1px solid #ddd;
+        }
+
+        th {
+            background: #f8f9fa;
+            font-weight: 600;
+            color: #333;
+        }
+
+        .pending-item {
+            background: #fff3cd;
+            padding: 10px;
+            border-radius: 5px;
+            margin-bottom: 10px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .checkbox-group {
+            margin: 15px 0;
+        }
+
+        .checkbox-group label {
+            display: flex;
+            align-items: center;
+            cursor: pointer;
+        }
+
+        .checkbox-group input[type="checkbox"] {
+            width: auto;
+            margin-right: 8px;
+        }
+
+        @media (max-width: 768px) {
+            .grid-2 {
+                grid-template-columns: 1fr;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>Cashless Server Management</h1>
+            <div class="api-key-section">
+                <label for="apiKey">API Key:</label>
+                <input type="password" id="apiKey" placeholder="Enter your API key">
+            </div>
+        </header>
+
+        <div class="tabs">
+            <button class="tab-button active" onclick="showTab('users')">Users</button>
+            <button class="tab-button" onclick="showTab('userinfo')">User Info</button>
+            <button class="tab-button" onclick="showTab('purchases')">Purchases</button>
+            <button class="tab-button" onclick="showTab('vouchers')">Vouchers</button>
+            <button class="tab-button" onclick="showTab('privileges')">Privileges</button>
+            <button class="tab-button" onclick="showTab('transactions')">Transactions</button>
+        </div>
+
+        <!-- Users Tab -->
+        <div id="users-tab" class="tab-content active">
+            <div class="grid-2">
+                <div class="section">
+                    <h2>Create User</h2>
+                    <div class="form-group">
+                        <label for="createUserUID">User UID:</label>
+                        <input type="text" id="createUserUID" placeholder="e.g., user123">
+                    </div>
+                    <button class="btn" onclick="createUser()">Create User</button>
+                    <div id="createUserResult" class="result"></div>
+                </div>
+
+                <div class="section">
+                    <h2>Check Balance</h2>
+                    <div class="form-group">
+                        <label for="balanceUID">User UID:</label>
+                        <input type="text" id="balanceUID" placeholder="e.g., user123">
+                    </div>
+                    <button class="btn" onclick="checkBalance()">Check Balance</button>
+                    <div id="balanceResult" class="result"></div>
+                </div>
+            </div>
+
+            <div class="section">
+                <h2>Top Up User</h2>
+                <div class="grid-2">
+                    <div class="form-group">
+                        <label for="topupUID">User UID:</label>
+                        <input type="text" id="topupUID" placeholder="e.g., user123">
+                    </div>
+                    <div class="form-group">
+                        <label for="topupAmount">Amount (cents):</label>
+                        <input type="number" id="topupAmount" placeholder="e.g., 1000">
+                    </div>
+                </div>
+                <button class="btn" onclick="topUpUser()">Top Up</button>
+                <div id="topupResult" class="result"></div>
+            </div>
+        </div>
+
+        <!-- User Info Tab -->
+        <div id="userinfo-tab" class="tab-content">
+            <div class="section">
+                <h2>User Information</h2>
+                <div class="form-group">
+                    <label for="userinfoUID">User UID:</label>
+                    <input type="text" id="userinfoUID" placeholder="e.g., user123">
+                </div>
+                <button class="btn" onclick="loadUserInfo()">Load User Info</button>
+
+                <div id="userinfoResult" style="margin-top: 20px;"></div>
+            </div>
+        </div>
+
+        <!-- Purchases Tab -->
+        <div id="purchases-tab" class="tab-content">
+            <div class="section">
+                <h2>Make Digital Purchase</h2>
+                <div class="grid-2">
+                    <div class="form-group">
+                        <label for="purchaseUID">User UID:</label>
+                        <input type="text" id="purchaseUID" placeholder="e.g., user123">
+                    </div>
+                    <div class="form-group">
+                        <label for="purchaseAmount">Amount (cents):</label>
+                        <input type="number" id="purchaseAmount" placeholder="e.g., 150">
+                    </div>
+                    <div class="form-group">
+                        <label for="purchaseProduct">Product ID:</label>
+                        <input type="number" id="purchaseProduct" placeholder="e.g., 1">
+                    </div>
+                    <div class="form-group">
+                        <label for="purchaseMachine">Machine ID:</label>
+                        <input type="text" id="purchaseMachine" placeholder="e.g., VM001">
+                    </div>
+                </div>
+                <button class="btn" onclick="makePurchase()">Create Purchase</button>
+                <div id="purchaseResult" class="result"></div>
+            </div>
+
+            <div class="section">
+                <h2>Pending Purchases</h2>
+                <div id="pendingPurchases"></div>
+            </div>
+
+            <div class="section">
+                <h2>Make Cash Purchase</h2>
+                <div class="grid-2">
+                    <div class="form-group">
+                        <label for="cashAmount">Amount (cents):</label>
+                        <input type="number" id="cashAmount" placeholder="e.g., 150">
+                    </div>
+                    <div class="form-group">
+                        <label for="cashProduct">Product ID:</label>
+                        <input type="number" id="cashProduct" placeholder="e.g., 1">
+                    </div>
+                    <div class="form-group">
+                        <label for="cashMachine">Machine ID:</label>
+                        <input type="text" id="cashMachine" placeholder="e.g., VM001">
+                    </div>
+                </div>
+                <button class="btn" onclick="makeCashPurchase()">Create Cash Purchase</button>
+                <div id="cashPurchaseResult" class="result"></div>
+            </div>
+        </div>
+
+        <!-- Vouchers Tab -->
+        <div id="vouchers-tab" class="tab-content">
+            <div class="section">
+                <h2>Create Voucher</h2>
+                <div class="grid-2">
+                    <div class="form-group">
+                        <label for="voucherUID">User UID:</label>
+                        <input type="text" id="voucherUID" placeholder="e.g., user123">
+                    </div>
+                    <div class="form-group">
+                        <label for="voucherMachine">Machine ID:</label>
+                        <input type="text" id="voucherMachine" placeholder="e.g., VM001">
+                    </div>
+                </div>
+                <button class="btn" onclick="createVoucher()">Create Voucher</button>
+                <div id="voucherResult" class="result"></div>
+            </div>
+        </div>
+
+        <!-- Privileges Tab -->
+        <div id="privileges-tab" class="tab-content">
+            <div class="section">
+                <h2>Set User Machine Privilege</h2>
+                <div class="grid-2">
+                    <div class="form-group">
+                        <label for="privUID">User UID:</label>
+                        <input type="text" id="privUID" placeholder="e.g., user123">
+                    </div>
+                    <div class="form-group">
+                        <label for="privMachine">Machine ID:</label>
+                        <input type="text" id="privMachine" placeholder="e.g., VM001">
+                    </div>
+                </div>
+                <div class="checkbox-group">
+                    <label>
+                        <input type="checkbox" id="privFreeVend">
+                        Enable Free Vend
+                    </label>
+                </div>
+                <button class="btn" onclick="createPrivilege()">Set Privilege</button>
+                <div id="privilegeResult" class="result"></div>
+            </div>
+        </div>
+
+        <!-- Transactions Tab -->
+        <div id="transactions-tab" class="tab-content">
+            <div class="section">
+                <h2>Transaction History</h2>
+                <div class="form-group">
+                    <label for="transUID">User UID (optional):</label>
+                    <input type="text" id="transUID" placeholder="Leave empty for all transactions">
+                </div>
+                <button class="btn" onclick="loadTransactions()">Load Transactions</button>
+                <div id="transactionsTable"></div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const API_BASE = window.location.origin;
+        let pendingTransactions = [];
+
+        function getAPIKey() {
+            return document.getElementById('apiKey').value;
+        }
+
+        function showTab(tabName) {
+            // Hide all tabs
+            document.querySelectorAll('.tab-content').forEach(tab => {
+                tab.classList.remove('active');
+            });
+            document.querySelectorAll('.tab-button').forEach(btn => {
+                btn.classList.remove('active');
+            });
+
+            // Show selected tab
+            document.getElementById(tabName + '-tab').classList.add('active');
+            event.target.classList.add('active');
+        }
+
+        function showResult(elementId, message, type) {
+            const resultDiv = document.getElementById(elementId);
+            resultDiv.textContent = message;
+            resultDiv.className = 'result ' + type;
+            resultDiv.style.display = 'block';
+            setTimeout(() => {
+                resultDiv.style.display = 'none';
+            }, 5000);
+        }
+
+        async function apiRequest(endpoint, data) {
+            const response = await fetch(API_BASE + endpoint, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'X-API-Key': getAPIKey()
+                },
+                body: JSON.stringify(data)
+            });
+
+            const text = await response.text();
+
+            if (!response.ok) {
+                throw new Error(text || `HTTP ${response.status}`);
+            }
+
+            try {
+                return JSON.parse(text);
+            } catch {
+                return { message: text };
+            }
+        }
+
+        async function createUser() {
+            const uid = document.getElementById('createUserUID').value;
+            if (!uid) {
+                showResult('createUserResult', 'Please enter a UID', 'error');
+                return;
+            }
+
+            try {
+                await apiRequest('/createUser', { uid });
+                showResult('createUserResult', `User ${uid} created successfully`, 'success');
+                document.getElementById('createUserUID').value = '';
+            } catch (error) {
+                showResult('createUserResult', 'Error: ' + error.message, 'error');
+            }
+        }
+
+        async function checkBalance() {
+            const uid = document.getElementById('balanceUID').value;
+            if (!uid) {
+                showResult('balanceResult', 'Please enter a UID', 'error');
+                return;
+            }
+
+            try {
+                const result = await apiRequest('/getBalance', { uid });
+                const balanceInDollars = (result.balance / 100).toFixed(2);
+                showResult('balanceResult', `Balance: $${balanceInDollars} (${result.balance} cents)`, 'info');
+            } catch (error) {
+                showResult('balanceResult', 'Error: ' + error.message, 'error');
+            }
+        }
+
+        async function topUpUser() {
+            const uid = document.getElementById('topupUID').value;
+            const amount = parseInt(document.getElementById('topupAmount').value);
+
+            if (!uid || !amount) {
+                showResult('topupResult', 'Please fill in all fields', 'error');
+                return;
+            }
+
+            try {
+                await apiRequest('/topUp', { uid, amount });
+                showResult('topupResult', `Successfully topped up ${uid} with ${amount} cents`, 'success');
+                document.getElementById('topupAmount').value = '';
+            } catch (error) {
+                showResult('topupResult', 'Error: ' + error.message, 'error');
+            }
+        }
+
+        async function makePurchase() {
+            const uid = document.getElementById('purchaseUID').value;
+            const amount = parseInt(document.getElementById('purchaseAmount').value);
+            const product = parseInt(document.getElementById('purchaseProduct').value);
+            const machine_id = document.getElementById('purchaseMachine').value;
+
+            if (!uid || !amount || !product || !machine_id) {
+                showResult('purchaseResult', 'Please fill in all fields', 'error');
+                return;
+            }
+
+            try {
+                const result = await apiRequest('/makePurchase', {
+                    uid,
+                    amount,
+                    product,
+                    machine_id
+                });
+
+                if (result.transaction_id) {
+                    pendingTransactions.push(result);
+                    updatePendingPurchases();
+                    showResult('purchaseResult', `Purchase created! Transaction ID: ${result.transaction_id}`, 'success');
+                }
+            } catch (error) {
+                showResult('purchaseResult', 'Error: ' + error.message, 'error');
+            }
+        }
+
+        function updatePendingPurchases() {
+            const container = document.getElementById('pendingPurchases');
+            if (pendingTransactions.length === 0) {
+                container.innerHTML = '<p style="color: #666;">No pending purchases</p>';
+                return;
+            }
+
+            container.innerHTML = pendingTransactions.map(tx => `
+                <div class="pending-item">
+                    <div>
+                        <strong>ID: ${tx.transaction_id}</strong> -
+                        User: ${tx.uid || 'N/A'},
+                        Amount: ${tx.amount} cents,
+                        Product: ${tx.product}
+                    </div>
+                    <button class="btn" onclick="confirmPurchase(${tx.transaction_id})">Confirm</button>
+                </div>
+            `).join('');
+        }
+
+        async function confirmPurchase(transactionId) {
+            try {
+                await apiRequest('/confirmPurchase', { transaction_id: transactionId });
+                pendingTransactions = pendingTransactions.filter(tx => tx.transaction_id !== transactionId);
+                updatePendingPurchases();
+                showResult('purchaseResult', `Transaction ${transactionId} confirmed`, 'success');
+            } catch (error) {
+                showResult('purchaseResult', 'Error: ' + error.message, 'error');
+            }
+        }
+
+        async function makeCashPurchase() {
+            const amount = parseInt(document.getElementById('cashAmount').value);
+            const product = parseInt(document.getElementById('cashProduct').value);
+            const machine_id = document.getElementById('cashMachine').value;
+
+            if (!amount || !product || !machine_id) {
+                showResult('cashPurchaseResult', 'Please fill in all fields', 'error');
+                return;
+            }
+
+            try {
+                const result = await apiRequest('/makeCashPurchase', {
+                    amount,
+                    product,
+                    machine_id
+                });
+                showResult('cashPurchaseResult', `Cash purchase created! Transaction ID: ${result.transaction_id}`, 'success');
+                document.getElementById('cashAmount').value = '';
+                document.getElementById('cashProduct').value = '';
+            } catch (error) {
+                showResult('cashPurchaseResult', 'Error: ' + error.message, 'error');
+            }
+        }
+
+        async function createVoucher() {
+            const uid = document.getElementById('voucherUID').value;
+            const machine_id = document.getElementById('voucherMachine').value;
+
+            if (!uid || !machine_id) {
+                showResult('voucherResult', 'Please fill in all fields', 'error');
+                return;
+            }
+
+            try {
+                await apiRequest('/createVoucher', { uid, machine_id });
+                showResult('voucherResult', `Voucher created for ${uid} on machine ${machine_id}`, 'success');
+                document.getElementById('voucherUID').value = '';
+                document.getElementById('voucherMachine').value = '';
+            } catch (error) {
+                showResult('voucherResult', 'Error: ' + error.message, 'error');
+            }
+        }
+
+        async function createPrivilege() {
+            const uid = document.getElementById('privUID').value;
+            const machine_id = document.getElementById('privMachine').value;
+            const free_vend = document.getElementById('privFreeVend').checked;
+
+            if (!uid || !machine_id) {
+                showResult('privilegeResult', 'Please fill in all fields', 'error');
+                return;
+            }
+
+            try {
+                await apiRequest('/createPrivilege', { uid, machine_id, free_vend });
+                showResult('privilegeResult', `Privilege set for ${uid} on machine ${machine_id}`, 'success');
+                document.getElementById('privUID').value = '';
+                document.getElementById('privMachine').value = '';
+                document.getElementById('privFreeVend').checked = false;
+            } catch (error) {
+                showResult('privilegeResult', 'Error: ' + error.message, 'error');
+            }
+        }
+
+        async function loadUserInfo() {
+            const uid = document.getElementById('userinfoUID').value;
+            const container = document.getElementById('userinfoResult');
+
+            if (!uid) {
+                container.innerHTML = '<p style="color: #721c24;">Please enter a User UID</p>';
+                return;
+            }
+
+            container.innerHTML = '<p>Loading user information...</p>';
+
+            try {
+                // Fetch all user data in parallel
+                const [balance, transactions, vouchers, privileges] = await Promise.all([
+                    apiRequest('/getBalance', { uid }),
+                    apiRequest('/getTransactions', { uid, limit: 50 }),
+                    apiRequest('/getVouchers', { uid }),
+                    apiRequest('/getPrivileges', { uid })
+                ]);
+
+                // Build the user info display
+                const balanceInDollars = (balance.balance / 100).toFixed(2);
+
+                let html = `
+                    <div style="background: white; padding: 20px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1);">
+                        <h3 style="margin-top: 0; color: #667eea;">User: ${uid}</h3>
+
+                        <div style="background: #f8f9fa; padding: 15px; border-radius: 5px; margin-bottom: 20px;">
+                            <h4 style="margin-top: 0;">Balance</h4>
+                            <p style="font-size: 24px; font-weight: bold; color: ${balance.balance >= 0 ? '#00b894' : '#d63031'}; margin: 0;">
+                                $${balanceInDollars} <span style="font-size: 14px; color: #666;">(${balance.balance} cents)</span>
+                            </p>
+                        </div>
+
+                        <div style="margin-bottom: 20px;">
+                            <h4>Vouchers (${vouchers.length})</h4>
+                `;
+
+                if (vouchers.length === 0) {
+                    html += '<p style="color: #666;">No vouchers found</p>';
+                } else {
+                    html += '<table style="width: 100%; margin-top: 10px;"><thead><tr><th>Machine</th><th>Status</th><th>Created</th></tr></thead><tbody>';
+                    vouchers.forEach(v => {
+                        const status = v.used ? '<span style="color: #d63031;">Used</span>' : '<span style="color: #00b894;">Available</span>';
+                        const date = new Date(v.created_at).toLocaleString();
+                        html += `<tr><td>${v.machine_id}</td><td>${status}</td><td>${date}</td></tr>`;
+                    });
+                    html += '</tbody></table>';
+                }
+
+                html += `
+                        </div>
+
+                        <div style="margin-bottom: 20px;">
+                            <h4>Machine Privileges (${privileges.length})</h4>
+                `;
+
+                if (privileges.length === 0) {
+                    html += '<p style="color: #666;">No privileges found</p>';
+                } else {
+                    html += '<table style="width: 100%; margin-top: 10px;"><thead><tr><th>Machine</th><th>Free Vend</th></tr></thead><tbody>';
+                    privileges.forEach(p => {
+                        const freeVend = p.free_vend ? '<span style="color: #00b894; font-weight: bold;">Yes</span>' : '<span style="color: #666;">No</span>';
+                        html += `<tr><td>${p.machine_id}</td><td>${freeVend}</td></tr>`;
+                    });
+                    html += '</tbody></table>';
+                }
+
+                html += `
+                        </div>
+
+                        <div>
+                            <h4>Recent Transactions (${transactions.length})</h4>
+                `;
+
+                if (transactions.length === 0) {
+                    html += '<p style="color: #666;">No transactions found</p>';
+                } else {
+                    html += '<table style="width: 100%; margin-top: 10px;"><thead><tr><th>Date</th><th>Amount</th><th>Product</th><th>Machine</th><th>Status</th></tr></thead><tbody>';
+                    transactions.forEach(tx => {
+                        const amountInDollars = (tx.amount / 100).toFixed(2);
+                        const amountColor = tx.amount < 0 ? '#d63031' : '#00b894';
+                        const date = new Date(tx.created_at).toLocaleString();
+                        const statusBadge = getStatusBadge(tx.status);
+                        html += `<tr>
+                            <td>${date}</td>
+                            <td style="color: ${amountColor}; font-weight: bold;">$${amountInDollars}</td>
+                            <td>${tx.product}</td>
+                            <td>${tx.machine_id}</td>
+                            <td>${statusBadge}</td>
+                        </tr>`;
+                    });
+                    html += '</tbody></table>';
+                }
+
+                html += `
+                        </div>
+                    </div>
+                `;
+
+                container.innerHTML = html;
+
+            } catch (error) {
+                container.innerHTML = `<p style="color: #721c24;">Error loading user info: ${error.message}</p>`;
+            }
+        }
+
+        async function loadTransactions() {
+            const container = document.getElementById('transactionsTable');
+            container.innerHTML = '<p>Loading...</p>';
+
+            try {
+                const uid = document.getElementById('transUID').value;
+                const data = uid ? { uid, limit: 100 } : { limit: 100 };
+
+                const transactions = await apiRequest('/getTransactions', data);
+
+                if (!transactions || transactions.length === 0) {
+                    container.innerHTML = '<p style="color: #666;">No transactions found</p>';
+                    return;
+                }
+
+                // Build table HTML
+                let tableHTML = `
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>ID</th>
+                                <th>User</th>
+                                <th>Amount</th>
+                                <th>Product</th>
+                                <th>Machine</th>
+                                <th>Method</th>
+                                <th>Status</th>
+                                <th>Date</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                `;
+
+                transactions.forEach(tx => {
+                    const amountInDollars = (tx.amount / 100).toFixed(2);
+                    const amountClass = tx.amount < 0 ? 'color: #d63031;' : 'color: #00b894;';
+                    const date = new Date(tx.created_at).toLocaleString();
+                    const statusBadge = getStatusBadge(tx.status);
+
+                    tableHTML += `
+                        <tr>
+                            <td>${tx.transaction_id}</td>
+                            <td>${tx.uid || 'N/A'}</td>
+                            <td style="${amountClass}"><strong>$${amountInDollars}</strong></td>
+                            <td>${tx.product}</td>
+                            <td>${tx.machine_id}</td>
+                            <td>${tx.payment_method}</td>
+                            <td>${statusBadge}</td>
+                            <td>${date}</td>
+                        </tr>
+                    `;
+                });
+
+                tableHTML += `
+                        </tbody>
+                    </table>
+                `;
+
+                container.innerHTML = tableHTML;
+
+            } catch (error) {
+                container.innerHTML = `<p style="color: #721c24;">Error: ${error.message}</p>`;
+            }
+        }
+
+        function getStatusBadge(status) {
+            const badges = {
+                'confirmed': '<span style="background: #00b894; color: white; padding: 4px 8px; border-radius: 4px; font-size: 12px;">Confirmed</span>',
+                'pending': '<span style="background: #fdcb6e; color: #333; padding: 4px 8px; border-radius: 4px; font-size: 12px;">Pending</span>',
+                'failed': '<span style="background: #d63031; color: white; padding: 4px 8px; border-radius: 4px; font-size: 12px;">Failed</span>'
+            };
+            return badges[status] || status;
+        }
+
+        // Initialize
+        updatePendingPurchases();
+    </script>
+</body>
+</html>
