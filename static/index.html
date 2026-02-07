@@ -3,846 +3,1411 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Cashless Server Management</title>
+    <title>Cashless Server Admin</title>
     <style>
-        * {
-            margin: 0;
-            padding: 0;
-            box-sizing: border-box;
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+
+        :root {
+            --sidebar-bg: #1a1a2e;
+            --sidebar-hover: #16213e;
+            --sidebar-active: #0f3460;
+            --accent: #4361ee;
+            --accent-hover: #3a56d4;
+            --bg: #f0f2f5;
+            --card: #ffffff;
+            --text: #1a1a2e;
+            --text-muted: #6b7280;
+            --border: #e5e7eb;
+            --success: #10b981;
+            --warning: #f59e0b;
+            --danger: #ef4444;
+            --info: #3b82f6;
         }
 
         body {
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            min-height: 100vh;
-            padding: 20px;
-        }
-
-        .container {
-            max-width: 1200px;
-            margin: 0 auto;
-        }
-
-        header {
-            background: white;
-            border-radius: 10px;
-            padding: 20px 30px;
-            margin-bottom: 20px;
-            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
-        }
-
-        h1 {
-            color: #333;
-            font-size: 28px;
-            margin-bottom: 10px;
-        }
-
-        .api-key-section {
-            margin-top: 15px;
-            padding-top: 15px;
-            border-top: 1px solid #eee;
-        }
-
-        .api-key-section label {
-            display: block;
-            margin-bottom: 5px;
-            font-weight: 600;
-            color: #555;
-        }
-
-        .api-key-section input {
-            width: 100%;
-            padding: 10px;
-            border: 2px solid #ddd;
-            border-radius: 5px;
-            font-size: 14px;
-        }
-
-        .tabs {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: var(--bg);
+            color: var(--text);
             display: flex;
-            gap: 10px;
-            margin-bottom: 20px;
-            flex-wrap: wrap;
+            min-height: 100vh;
         }
 
-        .tab-button {
-            background: white;
-            border: none;
-            padding: 12px 24px;
-            border-radius: 8px;
+        /* Sidebar */
+        .sidebar {
+            width: 240px;
+            background: var(--sidebar-bg);
+            color: #fff;
+            display: flex;
+            flex-direction: column;
+            position: fixed;
+            top: 0;
+            left: 0;
+            bottom: 0;
+            z-index: 100;
+            transition: transform 0.3s;
+        }
+
+        .sidebar-header {
+            padding: 20px;
+            border-bottom: 1px solid rgba(255,255,255,0.1);
+        }
+
+        .sidebar-header h1 {
+            font-size: 18px;
+            font-weight: 700;
+            letter-spacing: -0.5px;
+        }
+
+        .sidebar-header .subtitle {
+            font-size: 11px;
+            color: rgba(255,255,255,0.5);
+            margin-top: 4px;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+        }
+
+        .sidebar nav {
+            flex: 1;
+            padding: 12px 0;
+            overflow-y: auto;
+        }
+
+        .nav-section {
+            padding: 8px 20px 4px;
+            font-size: 10px;
+            text-transform: uppercase;
+            letter-spacing: 1.5px;
+            color: rgba(255,255,255,0.35);
+            margin-top: 8px;
+        }
+
+        .nav-item {
+            display: flex;
+            align-items: center;
+            padding: 10px 20px;
+            color: rgba(255,255,255,0.7);
+            text-decoration: none;
+            font-size: 14px;
             cursor: pointer;
-            font-size: 16px;
+            transition: all 0.15s;
+            border-left: 3px solid transparent;
+        }
+
+        .nav-item:hover {
+            background: var(--sidebar-hover);
+            color: #fff;
+        }
+
+        .nav-item.active {
+            background: var(--sidebar-active);
+            color: #fff;
+            border-left-color: var(--accent);
+        }
+
+        .nav-item svg {
+            width: 18px;
+            height: 18px;
+            margin-right: 12px;
+            flex-shrink: 0;
+        }
+
+        /* Main content */
+        .main {
+            margin-left: 240px;
+            flex: 1;
+            min-height: 100vh;
+        }
+
+        .topbar {
+            background: var(--card);
+            border-bottom: 1px solid var(--border);
+            padding: 12px 24px;
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            position: sticky;
+            top: 0;
+            z-index: 50;
+        }
+
+        .topbar label {
+            font-size: 13px;
             font-weight: 600;
-            color: #667eea;
-            transition: all 0.3s;
-            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+            color: var(--text-muted);
+            white-space: nowrap;
         }
 
-        .tab-button:hover {
-            transform: translateY(-2px);
-            box-shadow: 0 4px 8px rgba(0, 0, 0, 0.15);
+        .topbar input {
+            flex: 1;
+            max-width: 400px;
+            padding: 8px 12px;
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            font-size: 13px;
+            background: var(--bg);
         }
 
-        .tab-button.active {
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            color: white;
+        .topbar input:focus {
+            outline: none;
+            border-color: var(--accent);
+            box-shadow: 0 0 0 3px rgba(67, 97, 238, 0.1);
         }
 
-        .tab-content {
+        .hamburger {
             display: none;
-            background: white;
-            border-radius: 10px;
-            padding: 30px;
-            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+            background: none;
+            border: none;
+            color: var(--text);
+            cursor: pointer;
+            padding: 4px;
         }
 
-        .tab-content.active {
-            display: block;
+        .content {
+            padding: 24px;
+        }
+
+        .page { display: none; }
+        .page.active { display: block; }
+
+        .page-title {
+            font-size: 22px;
+            font-weight: 700;
+            margin-bottom: 20px;
+        }
+
+        /* Cards */
+        .card {
+            background: var(--card);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 20px;
+            margin-bottom: 20px;
+        }
+
+        .card-title {
+            font-size: 15px;
+            font-weight: 600;
+            margin-bottom: 16px;
+            color: var(--text);
+        }
+
+        /* Stats grid */
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+            gap: 16px;
+            margin-bottom: 20px;
+        }
+
+        .stat-card {
+            background: var(--card);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 16px;
+        }
+
+        .stat-label {
+            font-size: 12px;
+            color: var(--text-muted);
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            margin-bottom: 4px;
+        }
+
+        .stat-value {
+            font-size: 24px;
+            font-weight: 700;
+        }
+
+        .stat-value.revenue { color: var(--success); }
+        .stat-value.pending { color: var(--warning); }
+        .stat-value.failed { color: var(--danger); }
+
+        /* Forms */
+        .form-row {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+            gap: 12px;
+            margin-bottom: 12px;
         }
 
         .form-group {
-            margin-bottom: 20px;
+            display: flex;
+            flex-direction: column;
         }
 
         .form-group label {
-            display: block;
-            margin-bottom: 5px;
-            font-weight: 600;
-            color: #333;
+            font-size: 13px;
+            font-weight: 500;
+            color: var(--text-muted);
+            margin-bottom: 4px;
         }
 
         .form-group input,
         .form-group select {
-            width: 100%;
-            padding: 10px;
-            border: 2px solid #ddd;
-            border-radius: 5px;
+            padding: 8px 12px;
+            border: 1px solid var(--border);
+            border-radius: 6px;
             font-size: 14px;
         }
 
         .form-group input:focus,
         .form-group select:focus {
             outline: none;
-            border-color: #667eea;
+            border-color: var(--accent);
+            box-shadow: 0 0 0 3px rgba(67, 97, 238, 0.1);
         }
 
-        .btn {
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            color: white;
-            border: none;
-            padding: 12px 30px;
-            border-radius: 5px;
+        .checkbox-label {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            font-size: 14px;
             cursor: pointer;
-            font-size: 16px;
-            font-weight: 600;
-            transition: all 0.3s;
+            margin: 8px 0;
         }
 
-        .btn:hover {
-            transform: translateY(-2px);
-            box-shadow: 0 4px 8px rgba(0, 0, 0, 0.2);
+        .checkbox-label input[type="checkbox"] {
+            width: 16px;
+            height: 16px;
+        }
+
+        /* Buttons */
+        .btn {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            padding: 8px 16px;
+            border: none;
+            border-radius: 6px;
+            font-size: 13px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.15s;
+        }
+
+        .btn-primary {
+            background: var(--accent);
+            color: #fff;
+        }
+
+        .btn-primary:hover { background: var(--accent-hover); }
+
+        .btn-danger {
+            background: var(--danger);
+            color: #fff;
+        }
+
+        .btn-danger:hover { background: #dc2626; }
+
+        .btn-secondary {
+            background: var(--bg);
+            color: var(--text);
+            border: 1px solid var(--border);
+        }
+
+        .btn-secondary:hover { background: #e5e7eb; }
+
+        .btn-sm {
+            padding: 4px 10px;
+            font-size: 12px;
         }
 
         .btn:disabled {
             opacity: 0.5;
             cursor: not-allowed;
-            transform: none;
         }
 
-        .btn-secondary {
-            background: #6c757d;
-            margin-left: 10px;
-        }
-
-        .result {
-            margin-top: 20px;
-            padding: 15px;
-            border-radius: 5px;
-            display: none;
-        }
-
-        .result.success {
-            background: #d4edda;
-            border: 1px solid #c3e6cb;
-            color: #155724;
-        }
-
-        .result.error {
-            background: #f8d7da;
-            border: 1px solid #f5c6cb;
-            color: #721c24;
-        }
-
-        .result.info {
-            background: #d1ecf1;
-            border: 1px solid #bee5eb;
-            color: #0c5460;
-        }
-
-        .grid-2 {
-            display: grid;
-            grid-template-columns: 1fr 1fr;
-            gap: 20px;
-        }
-
-        .section {
-            margin-bottom: 30px;
-        }
-
-        .section h2 {
-            color: #333;
-            margin-bottom: 15px;
-            font-size: 20px;
-            border-bottom: 2px solid #667eea;
-            padding-bottom: 10px;
+        /* Tables */
+        .table-wrap {
+            overflow-x: auto;
         }
 
         table {
             width: 100%;
             border-collapse: collapse;
-            margin-top: 15px;
-        }
-
-        th, td {
-            padding: 12px;
-            text-align: left;
-            border-bottom: 1px solid #ddd;
+            font-size: 13px;
         }
 
         th {
-            background: #f8f9fa;
+            text-align: left;
+            padding: 10px 12px;
             font-weight: 600;
-            color: #333;
+            color: var(--text-muted);
+            border-bottom: 2px solid var(--border);
+            font-size: 12px;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            white-space: nowrap;
         }
 
-        .pending-item {
-            background: #fff3cd;
-            padding: 10px;
-            border-radius: 5px;
-            margin-bottom: 10px;
+        td {
+            padding: 10px 12px;
+            border-bottom: 1px solid var(--border);
+            vertical-align: middle;
+        }
+
+        tr:hover td {
+            background: #f9fafb;
+        }
+
+        .clickable-row { cursor: pointer; }
+        .clickable-row:hover td { background: #eff6ff; }
+
+        /* Badges */
+        .badge {
+            display: inline-block;
+            padding: 2px 8px;
+            border-radius: 10px;
+            font-size: 11px;
+            font-weight: 600;
+        }
+
+        .badge-confirmed { background: #d1fae5; color: #065f46; }
+        .badge-pending { background: #fef3c7; color: #92400e; }
+        .badge-failed { background: #fee2e2; color: #991b1b; }
+        .badge-used { background: #e5e7eb; color: #4b5563; }
+        .badge-available { background: #dbeafe; color: #1e40af; }
+        .badge-yes { background: #d1fae5; color: #065f46; }
+        .badge-no { background: #fee2e2; color: #991b1b; }
+
+        /* Amount coloring */
+        .amount-positive { color: var(--success); font-weight: 600; }
+        .amount-negative { color: var(--danger); font-weight: 600; }
+
+        /* Toast notifications */
+        .toast-container {
+            position: fixed;
+            top: 16px;
+            right: 16px;
+            z-index: 1000;
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+
+        .toast {
+            padding: 12px 20px;
+            border-radius: 8px;
+            font-size: 13px;
+            font-weight: 500;
+            color: #fff;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+            animation: slideIn 0.3s ease;
+            max-width: 400px;
+        }
+
+        .toast-success { background: var(--success); }
+        .toast-error { background: var(--danger); }
+
+        @keyframes slideIn {
+            from { transform: translateX(100%); opacity: 0; }
+            to { transform: translateX(0); opacity: 1; }
+        }
+
+        /* Pagination */
+        .pagination {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            margin-top: 16px;
+            font-size: 13px;
+        }
+
+        .pagination .page-info { color: var(--text-muted); }
+
+        /* User detail panel */
+        .detail-panel {
+            background: #f9fafb;
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 20px;
+            margin-top: 16px;
+        }
+
+        .detail-header {
             display: flex;
             justify-content: space-between;
             align-items: center;
+            margin-bottom: 16px;
         }
 
-        .checkbox-group {
-            margin: 15px 0;
+        .detail-header h3 { font-size: 18px; }
+
+        .detail-balance {
+            font-size: 28px;
+            font-weight: 700;
+            margin-bottom: 16px;
         }
 
-        .checkbox-group label {
-            display: flex;
+        .detail-section {
+            margin-bottom: 20px;
+        }
+
+        .detail-section h4 {
+            font-size: 14px;
+            font-weight: 600;
+            margin-bottom: 8px;
+            color: var(--text-muted);
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        /* Modal */
+        .modal-overlay {
+            display: none;
+            position: fixed;
+            inset: 0;
+            background: rgba(0,0,0,0.5);
+            z-index: 200;
+            justify-content: center;
             align-items: center;
-            cursor: pointer;
         }
 
-        .checkbox-group input[type="checkbox"] {
-            width: auto;
-            margin-right: 8px;
+        .modal-overlay.active {
+            display: flex;
         }
 
+        .modal {
+            background: var(--card);
+            border-radius: 12px;
+            padding: 24px;
+            max-width: 500px;
+            width: 90%;
+            max-height: 80vh;
+            overflow-y: auto;
+        }
+
+        .modal h3 {
+            margin-bottom: 16px;
+        }
+
+        .modal-actions {
+            display: flex;
+            gap: 8px;
+            justify-content: flex-end;
+            margin-top: 16px;
+        }
+
+        .key-display {
+            background: #1a1a2e;
+            color: #10b981;
+            padding: 12px;
+            border-radius: 6px;
+            font-family: monospace;
+            font-size: 13px;
+            word-break: break-all;
+            margin: 12px 0;
+        }
+
+        /* Endpoint checkboxes grid */
+        .endpoint-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 4px;
+        }
+
+        /* Filter bar */
+        .filter-bar {
+            display: flex;
+            gap: 12px;
+            align-items: flex-end;
+            flex-wrap: wrap;
+            margin-bottom: 16px;
+        }
+
+        .filter-bar .form-group {
+            min-width: 150px;
+        }
+
+        /* Responsive */
         @media (max-width: 768px) {
-            .grid-2 {
+            .sidebar {
+                transform: translateX(-100%);
+            }
+
+            .sidebar.open {
+                transform: translateX(0);
+            }
+
+            .main {
+                margin-left: 0;
+            }
+
+            .hamburger {
+                display: block;
+            }
+
+            .stats-grid {
+                grid-template-columns: 1fr 1fr;
+            }
+
+            .form-row {
+                grid-template-columns: 1fr;
+            }
+
+            .endpoint-grid {
                 grid-template-columns: 1fr;
             }
         }
+
+        /* Empty state */
+        .empty-state {
+            text-align: center;
+            padding: 40px;
+            color: var(--text-muted);
+        }
+
+        .empty-state p {
+            font-size: 14px;
+        }
+
+        /* Inline action forms */
+        .inline-form {
+            display: flex;
+            gap: 8px;
+            align-items: flex-end;
+            flex-wrap: wrap;
+            margin-top: 12px;
+            padding-top: 12px;
+            border-top: 1px solid var(--border);
+        }
+
+        .inline-form .form-group { min-width: 140px; flex: 1; }
     </style>
 </head>
 <body>
-    <div class="container">
-        <header>
-            <h1>Cashless Server Management</h1>
-            <div class="api-key-section">
-                <label for="apiKey">API Key:</label>
-                <input type="password" id="apiKey" placeholder="Enter your API key">
-            </div>
-        </header>
+    <aside class="sidebar" id="sidebar">
+        <div class="sidebar-header">
+            <h1>Cashless Server</h1>
+            <div class="subtitle">Admin Panel</div>
+        </div>
+        <nav>
+            <div class="nav-section">Overview</div>
+            <a class="nav-item active" onclick="navigate('dashboard')">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>
+                Dashboard
+            </a>
 
-        <div class="tabs">
-            <button class="tab-button active" onclick="showTab('users')">Users</button>
-            <button class="tab-button" onclick="showTab('userinfo')">User Info</button>
-            <button class="tab-button" onclick="showTab('purchases')">Purchases</button>
-            <button class="tab-button" onclick="showTab('vouchers')">Vouchers</button>
-            <button class="tab-button" onclick="showTab('privileges')">Privileges</button>
-            <button class="tab-button" onclick="showTab('transactions')">Transactions</button>
+            <div class="nav-section">Management</div>
+            <a class="nav-item" onclick="navigate('users')">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
+                Users
+            </a>
+            <a class="nav-item" onclick="navigate('purchases')">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="9" cy="21" r="1"/><circle cx="20" cy="21" r="1"/><path d="M1 1h4l2.68 13.39a2 2 0 0 0 2 1.61h9.72a2 2 0 0 0 2-1.61L23 6H6"/></svg>
+                Purchases
+            </a>
+            <a class="nav-item" onclick="navigate('vouchers')">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 12v6a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2v-6"/><polyline points="12 3 12 15"/><polyline points="8 7 12 3 16 7"/></svg>
+                Vouchers
+            </a>
+            <a class="nav-item" onclick="navigate('privileges')">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+                Privileges
+            </a>
+            <a class="nav-item" onclick="navigate('transactions')">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="1" x2="12" y2="23"/><path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg>
+                Transactions
+            </a>
+
+            <div class="nav-section">Settings</div>
+            <a class="nav-item" onclick="navigate('products')">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/></svg>
+                Products
+            </a>
+            <a class="nav-item" onclick="navigate('apikeys')">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 5.5 5.5 0 0 1 7.777-7.777zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4"/></svg>
+                API Keys
+            </a>
+        </nav>
+    </aside>
+
+    <div class="main">
+        <div class="topbar">
+            <button class="hamburger" onclick="toggleSidebar()">
+                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
+            </button>
+            <label for="apiKeyInput">API Key:</label>
+            <input type="password" id="apiKeyInput" placeholder="Enter your API key to get started">
         </div>
 
-        <!-- Users Tab -->
-        <div id="users-tab" class="tab-content active">
-            <div class="grid-2">
-                <div class="section">
-                    <h2>Create User</h2>
-                    <div class="form-group">
-                        <label for="createUserUID">User UID:</label>
-                        <input type="text" id="createUserUID" placeholder="e.g., user123">
-                    </div>
-                    <button class="btn" onclick="createUser()">Create User</button>
-                    <div id="createUserResult" class="result"></div>
+        <div class="content">
+            <!-- Dashboard -->
+            <div class="page active" id="page-dashboard">
+                <div class="page-title">Dashboard</div>
+                <div class="stats-grid" id="statsGrid">
+                    <div class="stat-card"><div class="stat-label">Loading...</div><div class="stat-value">-</div></div>
                 </div>
-
-                <div class="section">
-                    <h2>Check Balance</h2>
-                    <div class="form-group">
-                        <label for="balanceUID">User UID:</label>
-                        <input type="text" id="balanceUID" placeholder="e.g., user123">
+                <div class="card">
+                    <div class="card-title">Recent Activity</div>
+                    <div class="table-wrap" id="recentActivity">
+                        <div class="empty-state"><p>Enter an API key to load data</p></div>
                     </div>
-                    <button class="btn" onclick="checkBalance()">Check Balance</button>
-                    <div id="balanceResult" class="result"></div>
                 </div>
             </div>
 
-            <div class="section">
-                <h2>Top Up User</h2>
-                <div class="grid-2">
-                    <div class="form-group">
-                        <label for="topupUID">User UID:</label>
-                        <input type="text" id="topupUID" placeholder="e.g., user123">
+            <!-- Users -->
+            <div class="page" id="page-users">
+                <div class="page-title">Users</div>
+                <div class="card">
+                    <div style="display:flex;gap:12px;align-items:flex-end;flex-wrap:wrap;margin-bottom:16px;">
+                        <div class="form-group" style="flex:1;min-width:200px;">
+                            <label>Search Users</label>
+                            <input type="text" id="userSearch" placeholder="Search by UID..." oninput="debounce(loadUsers, 300)()">
+                        </div>
+                        <button class="btn btn-primary" onclick="showCreateUserModal()">Create User</button>
                     </div>
-                    <div class="form-group">
-                        <label for="topupAmount">Amount (cents):</label>
-                        <input type="number" id="topupAmount" placeholder="e.g., 1000">
+                    <div class="table-wrap" id="usersTable"></div>
+                    <div class="pagination" id="usersPagination"></div>
+                </div>
+                <div id="userDetail"></div>
+            </div>
+
+            <!-- Purchases -->
+            <div class="page" id="page-purchases">
+                <div class="page-title">Purchases</div>
+                <div style="display:grid;grid-template-columns:1fr 1fr;gap:20px;">
+                    <div class="card">
+                        <div class="card-title">Digital Purchase</div>
+                        <div class="form-group"><label>User UID</label><input type="text" id="dpUID" placeholder="user123"></div>
+                        <div class="form-row" style="margin-top:12px;">
+                            <div class="form-group"><label>Amount (cents)</label><input type="number" id="dpAmount" placeholder="150"></div>
+                            <div class="form-group"><label>Product ID</label><input type="number" id="dpProduct" placeholder="1"></div>
+                        </div>
+                        <div class="form-group"><label>Machine ID</label><input type="text" id="dpMachine" placeholder="VM001"></div>
+                        <button class="btn btn-primary" style="margin-top:12px;" onclick="makeDigitalPurchase()">Create Purchase</button>
+                    </div>
+                    <div class="card">
+                        <div class="card-title">Cash Purchase</div>
+                        <div class="form-row">
+                            <div class="form-group"><label>Amount (cents)</label><input type="number" id="cpAmount" placeholder="150"></div>
+                            <div class="form-group"><label>Product ID</label><input type="number" id="cpProduct" placeholder="1"></div>
+                        </div>
+                        <div class="form-group"><label>Machine ID</label><input type="text" id="cpMachine" placeholder="VM001"></div>
+                        <button class="btn btn-primary" style="margin-top:12px;" onclick="makeCashPurchaseAction()">Create Cash Purchase</button>
                     </div>
                 </div>
-                <button class="btn" onclick="topUpUser()">Top Up</button>
-                <div id="topupResult" class="result"></div>
+                <div class="card" style="margin-top:20px;">
+                    <div class="card-title">Pending Purchases</div>
+                    <div id="pendingList"><div class="empty-state"><p>No pending purchases</p></div></div>
+                </div>
+            </div>
+
+            <!-- Vouchers -->
+            <div class="page" id="page-vouchers">
+                <div class="page-title">Vouchers</div>
+                <div class="card">
+                    <div class="card-title">Create Voucher</div>
+                    <div class="form-row">
+                        <div class="form-group"><label>User UID</label><input type="text" id="cvUID" placeholder="user123"></div>
+                        <div class="form-group"><label>Machine ID</label><input type="text" id="cvMachine" placeholder="VM001"></div>
+                        <div class="form-group" style="justify-content:flex-end;"><button class="btn btn-primary" onclick="createVoucherAction()">Create Voucher</button></div>
+                    </div>
+                </div>
+                <div class="card">
+                    <div class="card-title">All Vouchers</div>
+                    <div class="filter-bar">
+                        <div class="form-group"><label>Filter by UID</label><input type="text" id="voucherFilterUID" placeholder="Leave empty for all"></div>
+                        <button class="btn btn-secondary" onclick="loadVouchers()">Load</button>
+                    </div>
+                    <div class="table-wrap" id="vouchersTable"></div>
+                </div>
+            </div>
+
+            <!-- Privileges -->
+            <div class="page" id="page-privileges">
+                <div class="page-title">Privileges</div>
+                <div class="card">
+                    <div class="card-title">Create Privilege</div>
+                    <div class="form-row">
+                        <div class="form-group"><label>User UID</label><input type="text" id="cprvUID" placeholder="user123"></div>
+                        <div class="form-group"><label>Machine ID</label><input type="text" id="cprvMachine" placeholder="VM001"></div>
+                    </div>
+                    <label class="checkbox-label"><input type="checkbox" id="cprvFreeVend"> Enable Free Vend</label>
+                    <button class="btn btn-primary" style="margin-top:8px;" onclick="createPrivilegeAction()">Set Privilege</button>
+                </div>
+                <div class="card">
+                    <div class="card-title">All Privileges</div>
+                    <div class="filter-bar">
+                        <div class="form-group"><label>Filter by UID</label><input type="text" id="privFilterUID" placeholder="Leave empty for all"></div>
+                        <button class="btn btn-secondary" onclick="loadPrivileges()">Load</button>
+                    </div>
+                    <div class="table-wrap" id="privilegesTable"></div>
+                </div>
+            </div>
+
+            <!-- Transactions -->
+            <div class="page" id="page-transactions">
+                <div class="page-title">Transactions</div>
+                <div class="card">
+                    <div class="filter-bar">
+                        <div class="form-group"><label>User UID</label><input type="text" id="txFilterUID" placeholder="All users"></div>
+                        <div class="form-group"><label>Limit</label>
+                            <select id="txFilterLimit">
+                                <option value="50">50</option>
+                                <option value="100" selected>100</option>
+                                <option value="250">250</option>
+                                <option value="500">500</option>
+                            </select>
+                        </div>
+                        <button class="btn btn-primary" onclick="loadTransactions()">Load</button>
+                    </div>
+                    <div class="table-wrap" id="transactionsTable"></div>
+                    <div class="pagination" id="txPagination"></div>
+                </div>
+            </div>
+
+            <!-- Products -->
+            <div class="page" id="page-products">
+                <div class="page-title">Product Mappings</div>
+                <div class="card">
+                    <div class="card-title">Add / Update Product</div>
+                    <div class="form-row">
+                        <div class="form-group"><label>Product ID</label><input type="number" id="pmID" placeholder="1"></div>
+                        <div class="form-group"><label>Product Name</label><input type="text" id="pmName" placeholder="Coffee"></div>
+                        <div class="form-group" style="justify-content:flex-end;"><button class="btn btn-primary" onclick="createProductMapping()">Save</button></div>
+                    </div>
+                </div>
+                <div class="card">
+                    <div class="card-title">All Products</div>
+                    <div class="table-wrap" id="productsTable"></div>
+                </div>
+            </div>
+
+            <!-- API Keys -->
+            <div class="page" id="page-apikeys">
+                <div class="page-title">API Keys</div>
+                <div class="card">
+                    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;">
+                        <div class="card-title" style="margin-bottom:0;">Manage API Keys</div>
+                        <button class="btn btn-primary" onclick="showCreateKeyModal()">Create API Key</button>
+                    </div>
+                    <div class="table-wrap" id="apiKeysTable"></div>
+                </div>
             </div>
         </div>
+    </div>
 
-        <!-- User Info Tab -->
-        <div id="userinfo-tab" class="tab-content">
-            <div class="section">
-                <h2>User Information</h2>
-                <div class="form-group">
-                    <label for="userinfoUID">User UID:</label>
-                    <input type="text" id="userinfoUID" placeholder="e.g., user123">
-                </div>
-                <button class="btn" onclick="loadUserInfo()">Load User Info</button>
+    <div class="toast-container" id="toasts"></div>
 
-                <div id="userinfoResult" style="margin-top: 20px;"></div>
+    <!-- Create User Modal -->
+    <div class="modal-overlay" id="createUserModal">
+        <div class="modal">
+            <h3>Create User</h3>
+            <div class="form-group"><label>User UID</label><input type="text" id="newUserUID" placeholder="Enter UID"></div>
+            <div class="modal-actions">
+                <button class="btn btn-secondary" onclick="closeModal('createUserModal')">Cancel</button>
+                <button class="btn btn-primary" onclick="createUserAction()">Create</button>
             </div>
         </div>
+    </div>
 
-        <!-- Purchases Tab -->
-        <div id="purchases-tab" class="tab-content">
-            <div class="section">
-                <h2>Make Digital Purchase</h2>
-                <div class="grid-2">
-                    <div class="form-group">
-                        <label for="purchaseUID">User UID:</label>
-                        <input type="text" id="purchaseUID" placeholder="e.g., user123">
-                    </div>
-                    <div class="form-group">
-                        <label for="purchaseAmount">Amount (cents):</label>
-                        <input type="number" id="purchaseAmount" placeholder="e.g., 150">
-                    </div>
-                    <div class="form-group">
-                        <label for="purchaseProduct">Product ID:</label>
-                        <input type="number" id="purchaseProduct" placeholder="e.g., 1">
-                    </div>
-                    <div class="form-group">
-                        <label for="purchaseMachine">Machine ID:</label>
-                        <input type="text" id="purchaseMachine" placeholder="e.g., VM001">
-                    </div>
-                </div>
-                <button class="btn" onclick="makePurchase()">Create Purchase</button>
-                <div id="purchaseResult" class="result"></div>
-            </div>
-
-            <div class="section">
-                <h2>Pending Purchases</h2>
-                <div id="pendingPurchases"></div>
-            </div>
-
-            <div class="section">
-                <h2>Make Cash Purchase</h2>
-                <div class="grid-2">
-                    <div class="form-group">
-                        <label for="cashAmount">Amount (cents):</label>
-                        <input type="number" id="cashAmount" placeholder="e.g., 150">
-                    </div>
-                    <div class="form-group">
-                        <label for="cashProduct">Product ID:</label>
-                        <input type="number" id="cashProduct" placeholder="e.g., 1">
-                    </div>
-                    <div class="form-group">
-                        <label for="cashMachine">Machine ID:</label>
-                        <input type="text" id="cashMachine" placeholder="e.g., VM001">
-                    </div>
-                </div>
-                <button class="btn" onclick="makeCashPurchase()">Create Cash Purchase</button>
-                <div id="cashPurchaseResult" class="result"></div>
+    <!-- Top Up Modal -->
+    <div class="modal-overlay" id="topUpModal">
+        <div class="modal">
+            <h3>Top Up User</h3>
+            <div class="form-group"><label>User UID</label><input type="text" id="topUpUID" readonly></div>
+            <div class="form-group" style="margin-top:12px;"><label>Amount (cents)</label><input type="number" id="topUpAmount" placeholder="1000"></div>
+            <div class="modal-actions">
+                <button class="btn btn-secondary" onclick="closeModal('topUpModal')">Cancel</button>
+                <button class="btn btn-primary" onclick="topUpAction()">Top Up</button>
             </div>
         </div>
+    </div>
 
-        <!-- Vouchers Tab -->
-        <div id="vouchers-tab" class="tab-content">
-            <div class="section">
-                <h2>Create Voucher</h2>
-                <div class="grid-2">
-                    <div class="form-group">
-                        <label for="voucherUID">User UID:</label>
-                        <input type="text" id="voucherUID" placeholder="e.g., user123">
-                    </div>
-                    <div class="form-group">
-                        <label for="voucherMachine">Machine ID:</label>
-                        <input type="text" id="voucherMachine" placeholder="e.g., VM001">
-                    </div>
-                </div>
-                <button class="btn" onclick="createVoucher()">Create Voucher</button>
-                <div id="voucherResult" class="result"></div>
+    <!-- Create API Key Modal -->
+    <div class="modal-overlay" id="createKeyModal">
+        <div class="modal">
+            <h3>Create API Key</h3>
+            <p style="font-size:13px;color:var(--text-muted);margin-bottom:12px;">Select the endpoints this key can access:</p>
+            <div class="endpoint-grid" id="endpointCheckboxes"></div>
+            <div class="modal-actions">
+                <button class="btn btn-secondary" onclick="closeModal('createKeyModal')">Cancel</button>
+                <button class="btn btn-primary" onclick="createAPIKeyAction()">Create Key</button>
             </div>
         </div>
+    </div>
 
-        <!-- Privileges Tab -->
-        <div id="privileges-tab" class="tab-content">
-            <div class="section">
-                <h2>Set User Machine Privilege</h2>
-                <div class="grid-2">
-                    <div class="form-group">
-                        <label for="privUID">User UID:</label>
-                        <input type="text" id="privUID" placeholder="e.g., user123">
-                    </div>
-                    <div class="form-group">
-                        <label for="privMachine">Machine ID:</label>
-                        <input type="text" id="privMachine" placeholder="e.g., VM001">
-                    </div>
-                </div>
-                <div class="checkbox-group">
-                    <label>
-                        <input type="checkbox" id="privFreeVend">
-                        Enable Free Vend
-                    </label>
-                </div>
-                <button class="btn" onclick="createPrivilege()">Set Privilege</button>
-                <div id="privilegeResult" class="result"></div>
-            </div>
-        </div>
-
-        <!-- Transactions Tab -->
-        <div id="transactions-tab" class="tab-content">
-            <div class="section">
-                <h2>Transaction History</h2>
-                <div class="form-group">
-                    <label for="transUID">User UID (optional):</label>
-                    <input type="text" id="transUID" placeholder="Leave empty for all transactions">
-                </div>
-                <button class="btn" onclick="loadTransactions()">Load Transactions</button>
-                <div id="transactionsTable"></div>
+    <!-- Show Key Modal -->
+    <div class="modal-overlay" id="showKeyModal">
+        <div class="modal">
+            <h3>API Key Created</h3>
+            <p style="font-size:13px;color:var(--danger);font-weight:600;">Copy this key now. It will not be shown again.</p>
+            <div class="key-display" id="newKeyDisplay"></div>
+            <div class="modal-actions">
+                <button class="btn btn-primary" onclick="copyKey()">Copy to Clipboard</button>
+                <button class="btn btn-secondary" onclick="closeModal('showKeyModal')">Close</button>
             </div>
         </div>
     </div>
 
     <script>
-        const API_BASE = window.location.origin;
-        let pendingTransactions = [];
+    const API = window.location.origin;
+    let currentPage = 'dashboard';
+    let pendingTxs = [];
+    let usersOffset = 0;
+    let txOffset = 0;
 
-        function getAPIKey() {
-            return document.getElementById('apiKey').value;
+    // Debounce helper
+    function debounce(fn, ms) {
+        let timer;
+        return function() {
+            clearTimeout(timer);
+            timer = setTimeout(() => fn(), ms);
+        };
+    }
+
+    function getKey() {
+        return document.getElementById('apiKeyInput').value;
+    }
+
+    async function api(endpoint, body = null) {
+        const opts = {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'X-API-Key': getKey() }
+        };
+        if (body !== null) opts.body = JSON.stringify(body);
+        const resp = await fetch(API + endpoint, opts);
+        const text = await resp.text();
+        if (!resp.ok) throw new Error(text || `HTTP ${resp.status}`);
+        try { return JSON.parse(text); } catch { return text; }
+    }
+
+    function toast(msg, type = 'success') {
+        const el = document.createElement('div');
+        el.className = `toast toast-${type}`;
+        el.textContent = msg;
+        document.getElementById('toasts').appendChild(el);
+        setTimeout(() => el.remove(), 4000);
+    }
+
+    function fmt(cents) {
+        return '$' + (Math.abs(cents) / 100).toFixed(2);
+    }
+
+    function fmtDate(iso) {
+        return new Date(iso).toLocaleString();
+    }
+
+    function badge(status) {
+        return `<span class="badge badge-${status}">${status}</span>`;
+    }
+
+    function amountHtml(cents) {
+        const cls = cents >= 0 ? 'amount-positive' : 'amount-negative';
+        const sign = cents >= 0 ? '+' : '-';
+        return `<span class="${cls}">${sign}${fmt(cents)}</span>`;
+    }
+
+    // Navigation
+    function navigate(page) {
+        currentPage = page;
+        document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
+        document.getElementById('page-' + page).classList.add('active');
+        document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
+        document.querySelectorAll('.nav-item').forEach(n => {
+            if (n.getAttribute('onclick') === `navigate('${page}')`) n.classList.add('active');
+        });
+        document.getElementById('sidebar').classList.remove('open');
+        window.location.hash = page;
+        loadPageData(page);
+    }
+
+    function toggleSidebar() {
+        document.getElementById('sidebar').classList.toggle('open');
+    }
+
+    function loadPageData(page) {
+        if (!getKey()) return;
+        switch (page) {
+            case 'dashboard': loadDashboard(); break;
+            case 'users': loadUsers(); break;
+            case 'vouchers': loadVouchers(); break;
+            case 'privileges': loadPrivileges(); break;
+            case 'transactions': loadTransactions(); break;
+            case 'products': loadProducts(); break;
+            case 'apikeys': loadAPIKeys(); break;
         }
+    }
 
-        function showTab(tabName) {
-            // Hide all tabs
-            document.querySelectorAll('.tab-content').forEach(tab => {
-                tab.classList.remove('active');
-            });
-            document.querySelectorAll('.tab-button').forEach(btn => {
-                btn.classList.remove('active');
-            });
+    function showModal(id) { document.getElementById(id).classList.add('active'); }
+    function closeModal(id) { document.getElementById(id).classList.remove('active'); }
 
-            // Show selected tab
-            document.getElementById(tabName + '-tab').classList.add('active');
-            event.target.classList.add('active');
-        }
+    // ===== DASHBOARD =====
+    async function loadDashboard() {
+        try {
+            const s = await api('/getStats', {});
+            document.getElementById('statsGrid').innerHTML = `
+                <div class="stat-card"><div class="stat-label">Total Users</div><div class="stat-value">${s.total_users}</div></div>
+                <div class="stat-card"><div class="stat-label">Revenue</div><div class="stat-value revenue">${fmt(-s.total_revenue)}</div></div>
+                <div class="stat-card"><div class="stat-label">Confirmed Txs</div><div class="stat-value">${s.confirmed_transactions}</div></div>
+                <div class="stat-card"><div class="stat-label">Pending Txs</div><div class="stat-value pending">${s.pending_transactions}</div></div>
+                <div class="stat-card"><div class="stat-label">Failed Txs</div><div class="stat-value failed">${s.failed_transactions}</div></div>
+                <div class="stat-card"><div class="stat-label">Active Vouchers</div><div class="stat-value">${s.active_vouchers}</div></div>
+                <div class="stat-card"><div class="stat-label">Used Vouchers</div><div class="stat-value">${s.used_vouchers}</div></div>
+                <div class="stat-card"><div class="stat-label">Privileges</div><div class="stat-value">${s.total_privileges}</div></div>
+            `;
 
-        function showResult(elementId, message, type) {
-            const resultDiv = document.getElementById(elementId);
-            resultDiv.textContent = message;
-            resultDiv.className = 'result ' + type;
-            resultDiv.style.display = 'block';
-            setTimeout(() => {
-                resultDiv.style.display = 'none';
-            }, 5000);
-        }
-
-        async function apiRequest(endpoint, data) {
-            const response = await fetch(API_BASE + endpoint, {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                    'X-API-Key': getAPIKey()
-                },
-                body: JSON.stringify(data)
-            });
-
-            const text = await response.text();
-
-            if (!response.ok) {
-                throw new Error(text || `HTTP ${response.status}`);
+            const txs = s.recent_transactions || [];
+            if (txs.length === 0) {
+                document.getElementById('recentActivity').innerHTML = '<div class="empty-state"><p>No transactions yet</p></div>';
+            } else {
+                document.getElementById('recentActivity').innerHTML = `<table>
+                    <thead><tr><th>ID</th><th>User</th><th>Amount</th><th>Product</th><th>Status</th><th>Date</th></tr></thead>
+                    <tbody>${txs.map(tx => `<tr>
+                        <td>${tx.transaction_id}</td>
+                        <td>${tx.uid || 'N/A'}</td>
+                        <td>${amountHtml(tx.amount)}</td>
+                        <td>${esc(tx.product)}</td>
+                        <td>${badge(tx.status)}</td>
+                        <td>${fmtDate(tx.created_at)}</td>
+                    </tr>`).join('')}</tbody></table>`;
             }
-
-            try {
-                return JSON.parse(text);
-            } catch {
-                return { message: text };
-            }
+        } catch (e) {
+            document.getElementById('statsGrid').innerHTML = `<div class="stat-card"><div class="stat-label">Error</div><div class="stat-value" style="font-size:14px;">${esc(e.message)}</div></div>`;
         }
+    }
 
-        async function createUser() {
-            const uid = document.getElementById('createUserUID').value;
-            if (!uid) {
-                showResult('createUserResult', 'Please enter a UID', 'error');
+    // ===== USERS =====
+    async function loadUsers() {
+        try {
+            const search = document.getElementById('userSearch').value;
+            const data = await api('/getUsers', { search, limit: 25, offset: usersOffset });
+            const users = data.users || [];
+
+            if (users.length === 0) {
+                document.getElementById('usersTable').innerHTML = '<div class="empty-state"><p>No users found</p></div>';
+                document.getElementById('usersPagination').innerHTML = '';
                 return;
             }
 
-            try {
-                await apiRequest('/createUser', { uid });
-                showResult('createUserResult', `User ${uid} created successfully`, 'success');
-                document.getElementById('createUserUID').value = '';
-            } catch (error) {
-                showResult('createUserResult', 'Error: ' + error.message, 'error');
-            }
+            document.getElementById('usersTable').innerHTML = `<table>
+                <thead><tr><th>UID</th><th>Balance</th><th>Created</th></tr></thead>
+                <tbody>${users.map(u => `<tr class="clickable-row" onclick="showUserDetail('${esc(u.uid)}')">
+                    <td><strong>${esc(u.uid)}</strong></td>
+                    <td>${amountHtml(u.balance)}</td>
+                    <td>${fmtDate(u.created_at)}</td>
+                </tr>`).join('')}</tbody></table>`;
+
+            const totalPages = Math.ceil(data.total / 25);
+            const currentPg = Math.floor(usersOffset / 25) + 1;
+            document.getElementById('usersPagination').innerHTML = `
+                <button class="btn btn-sm btn-secondary" ${usersOffset === 0 ? 'disabled' : ''} onclick="usersOffset-=25;loadUsers()">Prev</button>
+                <span class="page-info">Page ${currentPg} of ${totalPages} (${data.total} users)</span>
+                <button class="btn btn-sm btn-secondary" ${currentPg >= totalPages ? 'disabled' : ''} onclick="usersOffset+=25;loadUsers()">Next</button>
+            `;
+        } catch (e) {
+            document.getElementById('usersTable').innerHTML = `<div class="empty-state"><p>Error: ${esc(e.message)}</p></div>`;
         }
+    }
 
-        async function checkBalance() {
-            const uid = document.getElementById('balanceUID').value;
-            if (!uid) {
-                showResult('balanceResult', 'Please enter a UID', 'error');
-                return;
-            }
+    async function showUserDetail(uid) {
+        const el = document.getElementById('userDetail');
+        el.innerHTML = '<div class="detail-panel"><p>Loading...</p></div>';
 
-            try {
-                const result = await apiRequest('/getBalance', { uid });
-                const balanceInDollars = (result.balance / 100).toFixed(2);
-                showResult('balanceResult', `Balance: $${balanceInDollars} (${result.balance} cents)`, 'info');
-            } catch (error) {
-                showResult('balanceResult', 'Error: ' + error.message, 'error');
-            }
-        }
+        try {
+            const [balance, txs, vouchers, privileges] = await Promise.all([
+                api('/getBalance', { uid }),
+                api('/getTransactions', { uid, limit: 20 }),
+                api('/getVouchers', { uid }),
+                api('/getPrivileges', { uid })
+            ]);
 
-        async function topUpUser() {
-            const uid = document.getElementById('topupUID').value;
-            const amount = parseInt(document.getElementById('topupAmount').value);
+            const bal = balance.balance;
+            const transactions = txs || [];
+            const voucherList = vouchers || [];
+            const privList = privileges || [];
 
-            if (!uid || !amount) {
-                showResult('topupResult', 'Please fill in all fields', 'error');
-                return;
-            }
-
-            try {
-                await apiRequest('/topUp', { uid, amount });
-                showResult('topupResult', `Successfully topped up ${uid} with ${amount} cents`, 'success');
-                document.getElementById('topupAmount').value = '';
-            } catch (error) {
-                showResult('topupResult', 'Error: ' + error.message, 'error');
-            }
-        }
-
-        async function makePurchase() {
-            const uid = document.getElementById('purchaseUID').value;
-            const amount = parseInt(document.getElementById('purchaseAmount').value);
-            const product = parseInt(document.getElementById('purchaseProduct').value);
-            const machine_id = document.getElementById('purchaseMachine').value;
-
-            if (!uid || !amount || !product || !machine_id) {
-                showResult('purchaseResult', 'Please fill in all fields', 'error');
-                return;
-            }
-
-            try {
-                const result = await apiRequest('/makePurchase', {
-                    uid,
-                    amount,
-                    product,
-                    machine_id
-                });
-
-                if (result.transaction_id) {
-                    pendingTransactions.push(result);
-                    updatePendingPurchases();
-                    showResult('purchaseResult', `Purchase created! Transaction ID: ${result.transaction_id}`, 'success');
-                }
-            } catch (error) {
-                showResult('purchaseResult', 'Error: ' + error.message, 'error');
-            }
-        }
-
-        function updatePendingPurchases() {
-            const container = document.getElementById('pendingPurchases');
-            if (pendingTransactions.length === 0) {
-                container.innerHTML = '<p style="color: #666;">No pending purchases</p>';
-                return;
-            }
-
-            container.innerHTML = pendingTransactions.map(tx => `
-                <div class="pending-item">
+            el.innerHTML = `<div class="detail-panel">
+                <div class="detail-header">
+                    <h3>${esc(uid)}</h3>
                     <div>
-                        <strong>ID: ${tx.transaction_id}</strong> -
-                        User: ${tx.uid || 'N/A'},
-                        Amount: ${tx.amount} cents,
-                        Product: ${tx.product}
+                        <button class="btn btn-sm btn-primary" onclick="showTopUpModal('${esc(uid)}')">Top Up</button>
+                        <button class="btn btn-sm btn-secondary" onclick="document.getElementById('userDetail').innerHTML=''">Close</button>
                     </div>
-                    <button class="btn" onclick="confirmPurchase(${tx.transaction_id})">Confirm</button>
                 </div>
-            `).join('');
+                <div class="detail-balance ${bal >= 0 ? 'amount-positive' : 'amount-negative'}">${fmt(bal)}</div>
+
+                <div class="detail-section">
+                    <h4>Vouchers (${voucherList.length})</h4>
+                    ${voucherList.length === 0 ? '<p style="color:var(--text-muted);font-size:13px;">None</p>' :
+                    `<table><thead><tr><th>ID</th><th>Machine</th><th>Status</th><th>Created</th></tr></thead>
+                    <tbody>${voucherList.map(v => `<tr>
+                        <td>${v.id}</td>
+                        <td>${esc(v.machine_id)}</td>
+                        <td>${v.used ? badge('used') : badge('available')}</td>
+                        <td>${fmtDate(v.created_at)}</td>
+                    </tr>`).join('')}</tbody></table>`}
+                </div>
+
+                <div class="detail-section">
+                    <h4>Privileges (${privList.length})</h4>
+                    ${privList.length === 0 ? '<p style="color:var(--text-muted);font-size:13px;">None</p>' :
+                    `<table><thead><tr><th>Machine</th><th>Free Vend</th></tr></thead>
+                    <tbody>${privList.map(p => `<tr>
+                        <td>${esc(p.machine_id)}</td>
+                        <td>${p.free_vend ? badge('yes') : badge('no')}</td>
+                    </tr>`).join('')}</tbody></table>`}
+                </div>
+
+                <div class="detail-section">
+                    <h4>Recent Transactions (${transactions.length})</h4>
+                    ${transactions.length === 0 ? '<p style="color:var(--text-muted);font-size:13px;">None</p>' :
+                    `<table><thead><tr><th>Date</th><th>Amount</th><th>Product</th><th>Machine</th><th>Status</th></tr></thead>
+                    <tbody>${transactions.map(tx => `<tr>
+                        <td>${fmtDate(tx.created_at)}</td>
+                        <td>${amountHtml(tx.amount)}</td>
+                        <td>${esc(tx.product)}</td>
+                        <td>${esc(tx.machine_id)}</td>
+                        <td>${badge(tx.status)}</td>
+                    </tr>`).join('')}</tbody></table>`}
+                </div>
+            </div>`;
+        } catch (e) {
+            el.innerHTML = `<div class="detail-panel"><p style="color:var(--danger);">Error: ${esc(e.message)}</p></div>`;
         }
+    }
 
-        async function confirmPurchase(transactionId) {
-            try {
-                await apiRequest('/confirmPurchase', { transaction_id: transactionId });
-                pendingTransactions = pendingTransactions.filter(tx => tx.transaction_id !== transactionId);
-                updatePendingPurchases();
-                showResult('purchaseResult', `Transaction ${transactionId} confirmed`, 'success');
-            } catch (error) {
-                showResult('purchaseResult', 'Error: ' + error.message, 'error');
-            }
+    function showCreateUserModal() { showModal('createUserModal'); document.getElementById('newUserUID').value = ''; document.getElementById('newUserUID').focus(); }
+
+    async function createUserAction() {
+        const uid = document.getElementById('newUserUID').value.trim();
+        if (!uid) return toast('Enter a UID', 'error');
+        try {
+            await api('/createUser', { uid });
+            toast('User created: ' + uid);
+            closeModal('createUserModal');
+            loadUsers();
+        } catch (e) { toast(e.message, 'error'); }
+    }
+
+    function showTopUpModal(uid) {
+        document.getElementById('topUpUID').value = uid;
+        document.getElementById('topUpAmount').value = '';
+        showModal('topUpModal');
+        document.getElementById('topUpAmount').focus();
+    }
+
+    async function topUpAction() {
+        const uid = document.getElementById('topUpUID').value;
+        const amount = parseInt(document.getElementById('topUpAmount').value);
+        if (!amount || amount <= 0) return toast('Enter a valid amount', 'error');
+        try {
+            await api('/topUp', { uid, amount });
+            toast(`Topped up ${uid} with ${fmt(amount)}`);
+            closeModal('topUpModal');
+            showUserDetail(uid);
+            loadUsers();
+        } catch (e) { toast(e.message, 'error'); }
+    }
+
+    // ===== PURCHASES =====
+    async function makeDigitalPurchase() {
+        const uid = document.getElementById('dpUID').value.trim();
+        const amount = parseInt(document.getElementById('dpAmount').value);
+        const product = parseInt(document.getElementById('dpProduct').value);
+        const machine_id = document.getElementById('dpMachine').value.trim();
+        if (!uid || !amount || !product || !machine_id) return toast('Fill all fields', 'error');
+        try {
+            const res = await api('/makePurchase', { uid, amount, product, machine_id });
+            pendingTxs.push({ ...res, uid, amount, product });
+            renderPending();
+            toast('Purchase created (pending). ID: ' + res.transaction_id);
+        } catch (e) { toast(e.message, 'error'); }
+    }
+
+    async function makeCashPurchaseAction() {
+        const amount = parseInt(document.getElementById('cpAmount').value);
+        const product = parseInt(document.getElementById('cpProduct').value);
+        const machine_id = document.getElementById('cpMachine').value.trim();
+        if (!amount || !product || !machine_id) return toast('Fill all fields', 'error');
+        try {
+            const res = await api('/makeCashPurchase', { amount, product, machine_id });
+            toast('Cash purchase confirmed. ID: ' + res.transaction_id);
+            document.getElementById('cpAmount').value = '';
+            document.getElementById('cpProduct').value = '';
+        } catch (e) { toast(e.message, 'error'); }
+    }
+
+    function renderPending() {
+        const el = document.getElementById('pendingList');
+        if (pendingTxs.length === 0) {
+            el.innerHTML = '<div class="empty-state"><p>No pending purchases</p></div>';
+            return;
         }
+        el.innerHTML = `<table><thead><tr><th>ID</th><th>User</th><th>Amount</th><th>Product</th><th>Action</th></tr></thead>
+            <tbody>${pendingTxs.map(tx => `<tr>
+                <td>${tx.transaction_id}</td>
+                <td>${esc(tx.uid || 'N/A')}</td>
+                <td>${fmt(tx.amount)}</td>
+                <td>${tx.product}</td>
+                <td><button class="btn btn-sm btn-primary" onclick="confirmPurchase(${tx.transaction_id})">Confirm</button></td>
+            </tr>`).join('')}</tbody></table>`;
+    }
 
-        async function makeCashPurchase() {
-            const amount = parseInt(document.getElementById('cashAmount').value);
-            const product = parseInt(document.getElementById('cashProduct').value);
-            const machine_id = document.getElementById('cashMachine').value;
+    async function confirmPurchase(id) {
+        try {
+            await api('/confirmPurchase', { transaction_id: id });
+            pendingTxs = pendingTxs.filter(tx => tx.transaction_id !== id);
+            renderPending();
+            toast('Purchase confirmed');
+        } catch (e) { toast(e.message, 'error'); }
+    }
 
-            if (!amount || !product || !machine_id) {
-                showResult('cashPurchaseResult', 'Please fill in all fields', 'error');
+    // ===== VOUCHERS =====
+    async function loadVouchers() {
+        try {
+            const uid = document.getElementById('voucherFilterUID').value.trim();
+            const data = await api('/getVouchers', uid ? { uid } : {});
+            const vouchers = data || [];
+
+            if (vouchers.length === 0) {
+                document.getElementById('vouchersTable').innerHTML = '<div class="empty-state"><p>No vouchers found</p></div>';
                 return;
             }
 
-            try {
-                const result = await apiRequest('/makeCashPurchase', {
-                    amount,
-                    product,
-                    machine_id
-                });
-                showResult('cashPurchaseResult', `Cash purchase created! Transaction ID: ${result.transaction_id}`, 'success');
-                document.getElementById('cashAmount').value = '';
-                document.getElementById('cashProduct').value = '';
-            } catch (error) {
-                showResult('cashPurchaseResult', 'Error: ' + error.message, 'error');
-            }
-        }
+            document.getElementById('vouchersTable').innerHTML = `<table>
+                <thead><tr><th>ID</th><th>User</th><th>Machine</th><th>Status</th><th>Created</th><th>Action</th></tr></thead>
+                <tbody>${vouchers.map(v => `<tr>
+                    <td>${v.id}</td>
+                    <td>${esc(v.uid)}</td>
+                    <td>${esc(v.machine_id)}</td>
+                    <td>${v.used ? badge('used') : badge('available')}</td>
+                    <td>${fmtDate(v.created_at)}</td>
+                    <td>${v.used ? '' : `<button class="btn btn-sm btn-danger" onclick="deleteVoucher(${v.id})">Delete</button>`}</td>
+                </tr>`).join('')}</tbody></table>`;
+        } catch (e) { toast(e.message, 'error'); }
+    }
 
-        async function createVoucher() {
-            const uid = document.getElementById('voucherUID').value;
-            const machine_id = document.getElementById('voucherMachine').value;
+    async function createVoucherAction() {
+        const uid = document.getElementById('cvUID').value.trim();
+        const machine_id = document.getElementById('cvMachine').value.trim();
+        if (!uid || !machine_id) return toast('Fill all fields', 'error');
+        try {
+            await api('/createVoucher', { uid, machine_id });
+            toast('Voucher created');
+            document.getElementById('cvUID').value = '';
+            document.getElementById('cvMachine').value = '';
+            loadVouchers();
+        } catch (e) { toast(e.message, 'error'); }
+    }
 
-            if (!uid || !machine_id) {
-                showResult('voucherResult', 'Please fill in all fields', 'error');
+    async function deleteVoucher(id) {
+        if (!confirm('Delete this voucher?')) return;
+        try {
+            await api('/deleteVoucher', { id });
+            toast('Voucher deleted');
+            loadVouchers();
+        } catch (e) { toast(e.message, 'error'); }
+    }
+
+    // ===== PRIVILEGES =====
+    async function loadPrivileges() {
+        try {
+            const uid = document.getElementById('privFilterUID').value.trim();
+            const data = await api('/getPrivileges', uid ? { uid } : {});
+            const privs = data || [];
+
+            if (privs.length === 0) {
+                document.getElementById('privilegesTable').innerHTML = '<div class="empty-state"><p>No privileges found</p></div>';
                 return;
             }
 
-            try {
-                await apiRequest('/createVoucher', { uid, machine_id });
-                showResult('voucherResult', `Voucher created for ${uid} on machine ${machine_id}`, 'success');
-                document.getElementById('voucherUID').value = '';
-                document.getElementById('voucherMachine').value = '';
-            } catch (error) {
-                showResult('voucherResult', 'Error: ' + error.message, 'error');
-            }
-        }
+            document.getElementById('privilegesTable').innerHTML = `<table>
+                <thead><tr><th>User</th><th>Machine</th><th>Free Vend</th><th>Action</th></tr></thead>
+                <tbody>${privs.map(p => `<tr>
+                    <td>${esc(p.uid)}</td>
+                    <td>${esc(p.machine_id)}</td>
+                    <td>${p.free_vend ? badge('yes') : badge('no')}</td>
+                    <td><button class="btn btn-sm btn-danger" onclick="deletePrivilege('${esc(p.uid)}','${esc(p.machine_id)}')">Delete</button></td>
+                </tr>`).join('')}</tbody></table>`;
+        } catch (e) { toast(e.message, 'error'); }
+    }
 
-        async function createPrivilege() {
-            const uid = document.getElementById('privUID').value;
-            const machine_id = document.getElementById('privMachine').value;
-            const free_vend = document.getElementById('privFreeVend').checked;
+    async function createPrivilegeAction() {
+        const uid = document.getElementById('cprvUID').value.trim();
+        const machine_id = document.getElementById('cprvMachine').value.trim();
+        const free_vend = document.getElementById('cprvFreeVend').checked;
+        if (!uid || !machine_id) return toast('Fill all fields', 'error');
+        try {
+            await api('/createPrivilege', { uid, machine_id, free_vend });
+            toast('Privilege set');
+            document.getElementById('cprvUID').value = '';
+            document.getElementById('cprvMachine').value = '';
+            document.getElementById('cprvFreeVend').checked = false;
+            loadPrivileges();
+        } catch (e) { toast(e.message, 'error'); }
+    }
 
-            if (!uid || !machine_id) {
-                showResult('privilegeResult', 'Please fill in all fields', 'error');
+    async function deletePrivilege(uid, machine_id) {
+        if (!confirm('Delete this privilege?')) return;
+        try {
+            await api('/deletePrivilege', { uid, machine_id });
+            toast('Privilege deleted');
+            loadPrivileges();
+        } catch (e) { toast(e.message, 'error'); }
+    }
+
+    // ===== TRANSACTIONS =====
+    async function loadTransactions() {
+        try {
+            const uid = document.getElementById('txFilterUID').value.trim();
+            const limit = parseInt(document.getElementById('txFilterLimit').value);
+            const body = { limit, offset: txOffset };
+            if (uid) body.uid = uid;
+            const txs = await api('/getTransactions', body) || [];
+
+            if (txs.length === 0) {
+                document.getElementById('transactionsTable').innerHTML = '<div class="empty-state"><p>No transactions found</p></div>';
+                document.getElementById('txPagination').innerHTML = '';
                 return;
             }
 
-            try {
-                await apiRequest('/createPrivilege', { uid, machine_id, free_vend });
-                showResult('privilegeResult', `Privilege set for ${uid} on machine ${machine_id}`, 'success');
-                document.getElementById('privUID').value = '';
-                document.getElementById('privMachine').value = '';
-                document.getElementById('privFreeVend').checked = false;
-            } catch (error) {
-                showResult('privilegeResult', 'Error: ' + error.message, 'error');
-            }
-        }
+            document.getElementById('transactionsTable').innerHTML = `<table>
+                <thead><tr><th>ID</th><th>User</th><th>Amount</th><th>Product</th><th>Machine</th><th>Method</th><th>Status</th><th>Date</th></tr></thead>
+                <tbody>${txs.map(tx => `<tr>
+                    <td>${tx.transaction_id}</td>
+                    <td>${tx.uid ? esc(tx.uid) : 'N/A'}</td>
+                    <td>${amountHtml(tx.amount)}</td>
+                    <td>${esc(tx.product)}</td>
+                    <td>${esc(tx.machine_id)}</td>
+                    <td>${esc(tx.payment_method)}</td>
+                    <td>${badge(tx.status)}</td>
+                    <td>${fmtDate(tx.created_at)}</td>
+                </tr>`).join('')}</tbody></table>`;
 
-        async function loadUserInfo() {
-            const uid = document.getElementById('userinfoUID').value;
-            const container = document.getElementById('userinfoResult');
+            document.getElementById('txPagination').innerHTML = `
+                <button class="btn btn-sm btn-secondary" ${txOffset === 0 ? 'disabled' : ''} onclick="txOffset-=${limit};loadTransactions()">Prev</button>
+                <span class="page-info">Showing ${txOffset + 1}-${txOffset + txs.length}</span>
+                <button class="btn btn-sm btn-secondary" ${txs.length < limit ? 'disabled' : ''} onclick="txOffset+=${limit};loadTransactions()">Next</button>
+            `;
+        } catch (e) { toast(e.message, 'error'); }
+    }
 
-            if (!uid) {
-                container.innerHTML = '<p style="color: #721c24;">Please enter a User UID</p>';
+    // ===== PRODUCTS =====
+    async function loadProducts() {
+        try {
+            const data = await api('/getProductMap', {});
+            const products = data || [];
+
+            if (products.length === 0) {
+                document.getElementById('productsTable').innerHTML = '<div class="empty-state"><p>No product mappings</p></div>';
                 return;
             }
 
-            container.innerHTML = '<p>Loading user information...</p>';
+            document.getElementById('productsTable').innerHTML = `<table>
+                <thead><tr><th>ID</th><th>Name</th><th>Action</th></tr></thead>
+                <tbody>${products.map(p => `<tr>
+                    <td>${p.id}</td>
+                    <td>${esc(p.product_name)}</td>
+                    <td><button class="btn btn-sm btn-danger" onclick="deleteProduct(${p.id})">Delete</button></td>
+                </tr>`).join('')}</tbody></table>`;
+        } catch (e) { toast(e.message, 'error'); }
+    }
 
-            try {
-                // Fetch all user data in parallel
-                const [balance, transactions, vouchers, privileges] = await Promise.all([
-                    apiRequest('/getBalance', { uid }),
-                    apiRequest('/getTransactions', { uid, limit: 50 }),
-                    apiRequest('/getVouchers', { uid }),
-                    apiRequest('/getPrivileges', { uid })
-                ]);
+    async function createProductMapping() {
+        const id = parseInt(document.getElementById('pmID').value);
+        const product_name = document.getElementById('pmName').value.trim();
+        if (!id || !product_name) return toast('Fill all fields', 'error');
+        try {
+            await api('/createProductMapping', { id, product_name });
+            toast('Product mapping saved');
+            document.getElementById('pmID').value = '';
+            document.getElementById('pmName').value = '';
+            loadProducts();
+        } catch (e) { toast(e.message, 'error'); }
+    }
 
-                // Build the user info display
-                const balanceInDollars = (balance.balance / 100).toFixed(2);
+    async function deleteProduct(id) {
+        if (!confirm('Delete this product mapping?')) return;
+        try {
+            await api('/deleteProductMapping', { id });
+            toast('Product mapping deleted');
+            loadProducts();
+        } catch (e) { toast(e.message, 'error'); }
+    }
 
-                let html = `
-                    <div style="background: white; padding: 20px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1);">
-                        <h3 style="margin-top: 0; color: #667eea;">User: ${uid}</h3>
+    // ===== API KEYS =====
+    const ALL_ENDPOINTS = [
+        '/getStats', '/getUsers', '/getBalance', '/getTransactions',
+        '/getVouchers', '/getPrivileges', '/getProductMap', '/getAPIKeys',
+        '/makePurchase', '/confirmPurchase', '/makeCashPurchase', '/topUp',
+        '/createUser', '/createVoucher', '/createPrivilege',
+        '/createAPIKey', '/deleteAPIKey', '/createProductMapping',
+        '/deleteProductMapping', '/deleteVoucher', '/deletePrivilege'
+    ];
 
-                        <div style="background: #f8f9fa; padding: 15px; border-radius: 5px; margin-bottom: 20px;">
-                            <h4 style="margin-top: 0;">Balance</h4>
-                            <p style="font-size: 24px; font-weight: bold; color: ${balance.balance >= 0 ? '#00b894' : '#d63031'}; margin: 0;">
-                                $${balanceInDollars} <span style="font-size: 14px; color: #666;">(${balance.balance} cents)</span>
-                            </p>
-                        </div>
+    async function loadAPIKeys() {
+        try {
+            const keys = await api('/getAPIKeys', {}) || [];
 
-                        <div style="margin-bottom: 20px;">
-                            <h4>Vouchers (${vouchers.length})</h4>
-                `;
-
-                if (vouchers.length === 0) {
-                    html += '<p style="color: #666;">No vouchers found</p>';
-                } else {
-                    html += '<table style="width: 100%; margin-top: 10px;"><thead><tr><th>Machine</th><th>Status</th><th>Created</th></tr></thead><tbody>';
-                    vouchers.forEach(v => {
-                        const status = v.used ? '<span style="color: #d63031;">Used</span>' : '<span style="color: #00b894;">Available</span>';
-                        const date = new Date(v.created_at).toLocaleString();
-                        html += `<tr><td>${v.machine_id}</td><td>${status}</td><td>${date}</td></tr>`;
-                    });
-                    html += '</tbody></table>';
-                }
-
-                html += `
-                        </div>
-
-                        <div style="margin-bottom: 20px;">
-                            <h4>Machine Privileges (${privileges.length})</h4>
-                `;
-
-                if (privileges.length === 0) {
-                    html += '<p style="color: #666;">No privileges found</p>';
-                } else {
-                    html += '<table style="width: 100%; margin-top: 10px;"><thead><tr><th>Machine</th><th>Free Vend</th></tr></thead><tbody>';
-                    privileges.forEach(p => {
-                        const freeVend = p.free_vend ? '<span style="color: #00b894; font-weight: bold;">Yes</span>' : '<span style="color: #666;">No</span>';
-                        html += `<tr><td>${p.machine_id}</td><td>${freeVend}</td></tr>`;
-                    });
-                    html += '</tbody></table>';
-                }
-
-                html += `
-                        </div>
-
-                        <div>
-                            <h4>Recent Transactions (${transactions.length})</h4>
-                `;
-
-                if (transactions.length === 0) {
-                    html += '<p style="color: #666;">No transactions found</p>';
-                } else {
-                    html += '<table style="width: 100%; margin-top: 10px;"><thead><tr><th>Date</th><th>Amount</th><th>Product</th><th>Machine</th><th>Status</th></tr></thead><tbody>';
-                    transactions.forEach(tx => {
-                        const amountInDollars = (tx.amount / 100).toFixed(2);
-                        const amountColor = tx.amount < 0 ? '#d63031' : '#00b894';
-                        const date = new Date(tx.created_at).toLocaleString();
-                        const statusBadge = getStatusBadge(tx.status);
-                        html += `<tr>
-                            <td>${date}</td>
-                            <td style="color: ${amountColor}; font-weight: bold;">$${amountInDollars}</td>
-                            <td>${tx.product}</td>
-                            <td>${tx.machine_id}</td>
-                            <td>${statusBadge}</td>
-                        </tr>`;
-                    });
-                    html += '</tbody></table>';
-                }
-
-                html += `
-                        </div>
-                    </div>
-                `;
-
-                container.innerHTML = html;
-
-            } catch (error) {
-                container.innerHTML = `<p style="color: #721c24;">Error loading user info: ${error.message}</p>`;
+            if (keys.length === 0) {
+                document.getElementById('apiKeysTable').innerHTML = '<div class="empty-state"><p>No API keys</p></div>';
+                return;
             }
-        }
 
-        async function loadTransactions() {
-            const container = document.getElementById('transactionsTable');
-            container.innerHTML = '<p>Loading...</p>';
+            document.getElementById('apiKeysTable').innerHTML = `<table>
+                <thead><tr><th>Key</th><th>Endpoints</th><th>Created</th><th>Action</th></tr></thead>
+                <tbody>${keys.map(k => `<tr>
+                    <td><code>${esc(k.key)}</code></td>
+                    <td style="max-width:300px;word-break:break-all;font-size:11px;">${esc(k.allowed_endpoints)}</td>
+                    <td>${fmtDate(k.created_at)}</td>
+                    <td><button class="btn btn-sm btn-danger" onclick="deleteAPIKey('${esc(k.key)}')">Delete</button></td>
+                </tr>`).join('')}</tbody></table>`;
+        } catch (e) { toast(e.message, 'error'); }
+    }
 
-            try {
-                const uid = document.getElementById('transUID').value;
-                const data = uid ? { uid, limit: 100 } : { limit: 100 };
+    function showCreateKeyModal() {
+        const grid = document.getElementById('endpointCheckboxes');
+        grid.innerHTML = ALL_ENDPOINTS.map(ep =>
+            `<label class="checkbox-label"><input type="checkbox" value="${ep}" checked> ${ep}</label>`
+        ).join('');
+        showModal('createKeyModal');
+    }
 
-                const transactions = await apiRequest('/getTransactions', data);
+    async function createAPIKeyAction() {
+        const checked = [...document.querySelectorAll('#endpointCheckboxes input:checked')].map(c => c.value);
+        if (checked.length === 0) return toast('Select at least one endpoint', 'error');
+        try {
+            const res = await api('/createAPIKey', { allowed_endpoints: checked.join(',') });
+            closeModal('createKeyModal');
+            document.getElementById('newKeyDisplay').textContent = res.key;
+            showModal('showKeyModal');
+            loadAPIKeys();
+        } catch (e) { toast(e.message, 'error'); }
+    }
 
-                if (!transactions || transactions.length === 0) {
-                    container.innerHTML = '<p style="color: #666;">No transactions found</p>';
-                    return;
-                }
+    function copyKey() {
+        const key = document.getElementById('newKeyDisplay').textContent;
+        navigator.clipboard.writeText(key).then(() => toast('Key copied to clipboard'));
+    }
 
-                // Build table HTML
-                let tableHTML = `
-                    <table>
-                        <thead>
-                            <tr>
-                                <th>ID</th>
-                                <th>User</th>
-                                <th>Amount</th>
-                                <th>Product</th>
-                                <th>Machine</th>
-                                <th>Method</th>
-                                <th>Status</th>
-                                <th>Date</th>
-                            </tr>
-                        </thead>
-                        <tbody>
-                `;
+    async function deleteAPIKey(maskedKey) {
+        toast('Cannot delete API keys by masked key. Use the full key.', 'error');
+    }
 
-                transactions.forEach(tx => {
-                    const amountInDollars = (tx.amount / 100).toFixed(2);
-                    const amountClass = tx.amount < 0 ? 'color: #d63031;' : 'color: #00b894;';
-                    const date = new Date(tx.created_at).toLocaleString();
-                    const statusBadge = getStatusBadge(tx.status);
+    // Escape HTML
+    function esc(str) {
+        if (str === null || str === undefined) return '';
+        const div = document.createElement('div');
+        div.textContent = String(str);
+        return div.innerHTML;
+    }
 
-                    tableHTML += `
-                        <tr>
-                            <td>${tx.transaction_id}</td>
-                            <td>${tx.uid || 'N/A'}</td>
-                            <td style="${amountClass}"><strong>$${amountInDollars}</strong></td>
-                            <td>${tx.product}</td>
-                            <td>${tx.machine_id}</td>
-                            <td>${tx.payment_method}</td>
-                            <td>${statusBadge}</td>
-                            <td>${date}</td>
-                        </tr>
-                    `;
-                });
+    // Init
+    document.getElementById('apiKeyInput').addEventListener('change', () => loadPageData(currentPage));
+    document.getElementById('apiKeyInput').addEventListener('keyup', (e) => {
+        if (e.key === 'Enter') loadPageData(currentPage);
+    });
 
-                tableHTML += `
-                        </tbody>
-                    </table>
-                `;
+    // Hash navigation
+    const hash = window.location.hash.slice(1);
+    if (hash && document.getElementById('page-' + hash)) {
+        navigate(hash);
+    }
 
-                container.innerHTML = tableHTML;
-
-            } catch (error) {
-                container.innerHTML = `<p style="color: #721c24;">Error: ${error.message}</p>`;
-            }
-        }
-
-        function getStatusBadge(status) {
-            const badges = {
-                'confirmed': '<span style="background: #00b894; color: white; padding: 4px 8px; border-radius: 4px; font-size: 12px;">Confirmed</span>',
-                'pending': '<span style="background: #fdcb6e; color: #333; padding: 4px 8px; border-radius: 4px; font-size: 12px;">Pending</span>',
-                'failed': '<span style="background: #d63031; color: white; padding: 4px 8px; border-radius: 4px; font-size: 12px;">Failed</span>'
-            };
-            return badges[status] || status;
-        }
-
-        // Initialize
-        updatePendingPurchases();
+    renderPending();
     </script>
 </body>
 </html>

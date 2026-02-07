@@ -61,11 +61,12 @@ func setupTestEnvironment(t *testing.T) *http.ServeMux {
 	db.Exec("DELETE FROM vend_vouchers")
 	db.Exec("DELETE FROM user_machine_privileges")
 	db.Exec("DELETE FROM api_keys")
+	db.Exec("DELETE FROM product_maps")
 
 	// Create test API key with all permissions
 	apiKey := APIKey{
 		Key:              testAPIKey,
-		AllowedEndpoints: "/makePurchase,/confirmPurchase,/makeCashPurchase,/getBalance,/getTransactions,/getVouchers,/getPrivileges,/topUp,/createUser,/createVoucher,/createPrivilege",
+		AllowedEndpoints: "/makePurchase,/confirmPurchase,/makeCashPurchase,/getBalance,/getTransactions,/getVouchers,/getPrivileges,/topUp,/createUser,/createVoucher,/createPrivilege,/getStats,/getUsers,/getAPIKeys,/createAPIKey,/deleteAPIKey,/getProductMap,/createProductMapping,/deleteProductMapping,/deleteVoucher,/deletePrivilege",
 	}
 	db.Create(&apiKey)
 
@@ -82,6 +83,16 @@ func setupTestEnvironment(t *testing.T) *http.ServeMux {
 	mux.HandleFunc("/createPrivilege", apiKeyMiddleware(createPrivilegeHandler))
 	mux.HandleFunc("/makeCashPurchase", apiKeyMiddleware(cashPurchaseHandler))
 	mux.HandleFunc("/topUp", apiKeyMiddleware(topUpHandler))
+	mux.HandleFunc("/getStats", apiKeyMiddleware(getStatsHandler))
+	mux.HandleFunc("/getUsers", apiKeyMiddleware(getUsersHandler))
+	mux.HandleFunc("/getAPIKeys", apiKeyMiddleware(getAPIKeysHandler))
+	mux.HandleFunc("/createAPIKey", apiKeyMiddleware(createAPIKeyHandler))
+	mux.HandleFunc("/deleteAPIKey", apiKeyMiddleware(deleteAPIKeyHandler))
+	mux.HandleFunc("/getProductMap", apiKeyMiddleware(getProductMapHandler))
+	mux.HandleFunc("/createProductMapping", apiKeyMiddleware(createProductMappingHandler))
+	mux.HandleFunc("/deleteProductMapping", apiKeyMiddleware(deleteProductMappingHandler))
+	mux.HandleFunc("/deleteVoucher", apiKeyMiddleware(deleteVoucherHandler))
+	mux.HandleFunc("/deletePrivilege", apiKeyMiddleware(deletePrivilegeHandler))
 	mux.Handle("/metrics", promhttp.Handler())
 
 	return mux
@@ -838,5 +849,412 @@ func TestGetTransactions(t *testing.T) {
 
 	if len(limitedTransactions) != 1 {
 		t.Errorf("Expected 1 transaction with limit=1, got %d", len(limitedTransactions))
+	}
+}
+
+func TestGetStats(t *testing.T) {
+	mux := setupTestEnvironment(t)
+	defer teardownTestEnvironment(t)
+
+	// Create test data
+	ensureUser("stats-user-1")
+	ensureUser("stats-user-2")
+
+	// Top up and make purchases
+	makeRequest(t, mux, "POST", "/topUp", map[string]interface{}{"uid": "stats-user-1", "amount": 5000}, true)
+
+	purchaseResp := makeRequest(t, mux, "POST", "/makePurchase", map[string]interface{}{
+		"uid": "stats-user-1", "machine_id": "VM1", "product": 1, "amount": 300,
+	}, true)
+	var pr map[string]interface{}
+	json.Unmarshal(purchaseResp.Body.Bytes(), &pr)
+	makeRequest(t, mux, "POST", "/confirmPurchase", map[string]interface{}{"transaction_id": int(pr["transaction_id"].(float64))}, true)
+
+	makeRequest(t, mux, "POST", "/makeCashPurchase", map[string]interface{}{
+		"machine_id": "VM2", "product": 2, "amount": 200,
+	}, true)
+
+	// Create voucher and privilege
+	makeRequest(t, mux, "POST", "/createVoucher", map[string]interface{}{"uid": "stats-user-1", "machine_id": "VM1"}, true)
+	makeRequest(t, mux, "POST", "/createPrivilege", map[string]interface{}{"uid": "stats-user-1", "machine_id": "VM1", "free_vend": true}, true)
+
+	resp := makeRequest(t, mux, "POST", "/getStats", map[string]interface{}{}, true)
+
+	if resp.Code != http.StatusOK {
+		t.Errorf("Expected status 200, got %d. Body: %s", resp.Code, resp.Body.String())
+		return
+	}
+
+	var stats StatsResponse
+	if err := json.Unmarshal(resp.Body.Bytes(), &stats); err != nil {
+		t.Fatalf("Failed to parse stats: %v", err)
+	}
+
+	if stats.TotalUsers != 2 {
+		t.Errorf("Expected 2 users, got %d", stats.TotalUsers)
+	}
+	if stats.ConfirmedTransactions < 3 {
+		t.Errorf("Expected at least 3 confirmed transactions, got %d", stats.ConfirmedTransactions)
+	}
+	if stats.TotalRevenue != 500 {
+		t.Errorf("Expected revenue 500, got %d", stats.TotalRevenue)
+	}
+	if stats.ActiveVouchers != 1 {
+		t.Errorf("Expected 1 active voucher, got %d", stats.ActiveVouchers)
+	}
+	if stats.TotalPrivileges != 1 {
+		t.Errorf("Expected 1 privilege, got %d", stats.TotalPrivileges)
+	}
+	if len(stats.RecentTransactions) == 0 {
+		t.Error("Expected recent transactions to be non-empty")
+	}
+}
+
+func TestGetUsers(t *testing.T) {
+	mux := setupTestEnvironment(t)
+	defer teardownTestEnvironment(t)
+
+	ensureUser("user-alpha")
+	ensureUser("user-beta")
+	ensureUser("user-gamma")
+
+	// Give user-alpha a balance
+	makeRequest(t, mux, "POST", "/topUp", map[string]interface{}{"uid": "user-alpha", "amount": 3000}, true)
+
+	// Get all users
+	resp := makeRequest(t, mux, "POST", "/getUsers", map[string]interface{}{}, true)
+
+	if resp.Code != http.StatusOK {
+		t.Errorf("Expected status 200, got %d. Body: %s", resp.Code, resp.Body.String())
+		return
+	}
+
+	var result GetUsersResponse
+	if err := json.Unmarshal(resp.Body.Bytes(), &result); err != nil {
+		t.Fatalf("Failed to parse response: %v", err)
+	}
+
+	if result.Total != 3 {
+		t.Errorf("Expected total 3, got %d", result.Total)
+	}
+	if len(result.Users) != 3 {
+		t.Errorf("Expected 3 users, got %d", len(result.Users))
+	}
+
+	// Verify user-alpha has correct balance
+	for _, u := range result.Users {
+		if u.UID == "user-alpha" && u.Balance != 3000 {
+			t.Errorf("Expected user-alpha balance 3000, got %d", u.Balance)
+		}
+	}
+
+	// Test search
+	searchResp := makeRequest(t, mux, "POST", "/getUsers", map[string]interface{}{"search": "alpha"}, true)
+	var searchResult GetUsersResponse
+	json.Unmarshal(searchResp.Body.Bytes(), &searchResult)
+
+	if searchResult.Total != 1 {
+		t.Errorf("Expected 1 result for search 'alpha', got %d", searchResult.Total)
+	}
+
+	// Test pagination
+	pageResp := makeRequest(t, mux, "POST", "/getUsers", map[string]interface{}{"limit": 1, "offset": 0}, true)
+	var pageResult GetUsersResponse
+	json.Unmarshal(pageResp.Body.Bytes(), &pageResult)
+
+	if len(pageResult.Users) != 1 {
+		t.Errorf("Expected 1 user with limit=1, got %d", len(pageResult.Users))
+	}
+	if pageResult.Total != 3 {
+		t.Errorf("Expected total still 3 with pagination, got %d", pageResult.Total)
+	}
+}
+
+func TestGetUsersEmpty(t *testing.T) {
+	mux := setupTestEnvironment(t)
+	defer teardownTestEnvironment(t)
+
+	resp := makeRequest(t, mux, "POST", "/getUsers", map[string]interface{}{}, true)
+
+	if resp.Code != http.StatusOK {
+		t.Errorf("Expected status 200, got %d", resp.Code)
+		return
+	}
+
+	var result GetUsersResponse
+	json.Unmarshal(resp.Body.Bytes(), &result)
+
+	if result.Total != 0 {
+		t.Errorf("Expected total 0, got %d", result.Total)
+	}
+}
+
+func TestGetAPIKeys(t *testing.T) {
+	mux := setupTestEnvironment(t)
+	defer teardownTestEnvironment(t)
+
+	resp := makeRequest(t, mux, "POST", "/getAPIKeys", map[string]interface{}{}, true)
+
+	if resp.Code != http.StatusOK {
+		t.Errorf("Expected status 200, got %d", resp.Code)
+		return
+	}
+
+	var keys []map[string]interface{}
+	json.Unmarshal(resp.Body.Bytes(), &keys)
+
+	if len(keys) < 1 {
+		t.Error("Expected at least 1 API key")
+		return
+	}
+
+	// Key should be masked
+	key := keys[0]["key"].(string)
+	if key == testAPIKey {
+		t.Error("API key should be masked, got full key")
+	}
+	if len(key) > 11 { // "xxxx...xxxx" = 11 chars max
+		t.Errorf("Expected masked key to be short, got %s", key)
+	}
+}
+
+func TestCreateAPIKey(t *testing.T) {
+	mux := setupTestEnvironment(t)
+	defer teardownTestEnvironment(t)
+
+	resp := makeRequest(t, mux, "POST", "/createAPIKey", map[string]interface{}{
+		"allowed_endpoints": "/getBalance,/topUp",
+	}, true)
+
+	if resp.Code != http.StatusCreated {
+		t.Errorf("Expected status 201, got %d. Body: %s", resp.Code, resp.Body.String())
+		return
+	}
+
+	var result map[string]interface{}
+	json.Unmarshal(resp.Body.Bytes(), &result)
+
+	newKey := result["key"].(string)
+	if len(newKey) < 32 {
+		t.Errorf("Expected a full API key, got %s", newKey)
+	}
+
+	// Verify in database
+	var dbKey APIKey
+	err := db.Where("key = ?", newKey).First(&dbKey).Error
+	if err != nil {
+		t.Errorf("API key not found in database: %v", err)
+	}
+	if dbKey.AllowedEndpoints != "/getBalance,/topUp" {
+		t.Errorf("Expected endpoints '/getBalance,/topUp', got %s", dbKey.AllowedEndpoints)
+	}
+}
+
+func TestCreateAPIKeyMissingEndpoints(t *testing.T) {
+	mux := setupTestEnvironment(t)
+	defer teardownTestEnvironment(t)
+
+	resp := makeRequest(t, mux, "POST", "/createAPIKey", map[string]interface{}{
+		"allowed_endpoints": "",
+	}, true)
+
+	if resp.Code != http.StatusBadRequest {
+		t.Errorf("Expected status 400, got %d", resp.Code)
+	}
+}
+
+func TestDeleteAPIKey(t *testing.T) {
+	mux := setupTestEnvironment(t)
+	defer teardownTestEnvironment(t)
+
+	// Create a key to delete
+	createResp := makeRequest(t, mux, "POST", "/createAPIKey", map[string]interface{}{
+		"allowed_endpoints": "/getBalance",
+	}, true)
+	var createResult map[string]interface{}
+	json.Unmarshal(createResp.Body.Bytes(), &createResult)
+	newKey := createResult["key"].(string)
+
+	// Delete it
+	resp := makeRequest(t, mux, "POST", "/deleteAPIKey", map[string]interface{}{"key": newKey}, true)
+
+	if resp.Code != http.StatusOK {
+		t.Errorf("Expected status 200, got %d. Body: %s", resp.Code, resp.Body.String())
+		return
+	}
+
+	// Verify it's gone
+	var dbKey APIKey
+	err := db.Where("key = ?", newKey).First(&dbKey).Error
+	if err == nil {
+		t.Error("API key should have been deleted")
+	}
+
+	// Test deleting non-existent key
+	resp = makeRequest(t, mux, "POST", "/deleteAPIKey", map[string]interface{}{"key": "nonexistent"}, true)
+	if resp.Code != http.StatusNotFound {
+		t.Errorf("Expected status 404 for non-existent key, got %d", resp.Code)
+	}
+}
+
+func TestDeleteAPIKeySelfProtection(t *testing.T) {
+	mux := setupTestEnvironment(t)
+	defer teardownTestEnvironment(t)
+
+	// Try to delete the key we're currently using
+	resp := makeRequest(t, mux, "POST", "/deleteAPIKey", map[string]interface{}{"key": testAPIKey}, true)
+
+	if resp.Code != http.StatusBadRequest {
+		t.Errorf("Expected status 400 for self-deletion, got %d. Body: %s", resp.Code, resp.Body.String())
+	}
+}
+
+func TestGetProductMap(t *testing.T) {
+	mux := setupTestEnvironment(t)
+	defer teardownTestEnvironment(t)
+
+	// Insert products directly
+	db.Create(&ProductMap{ID: 1, ProductName: "Coffee"})
+	db.Create(&ProductMap{ID: 2, ProductName: "Tea"})
+
+	resp := makeRequest(t, mux, "POST", "/getProductMap", map[string]interface{}{}, true)
+
+	if resp.Code != http.StatusOK {
+		t.Errorf("Expected status 200, got %d", resp.Code)
+		return
+	}
+
+	var products []ProductMap
+	json.Unmarshal(resp.Body.Bytes(), &products)
+
+	if len(products) != 2 {
+		t.Errorf("Expected 2 products, got %d", len(products))
+	}
+}
+
+func TestCreateProductMapping(t *testing.T) {
+	mux := setupTestEnvironment(t)
+	defer teardownTestEnvironment(t)
+
+	resp := makeRequest(t, mux, "POST", "/createProductMapping", map[string]interface{}{
+		"id": 1, "product_name": "Coffee",
+	}, true)
+
+	if resp.Code != http.StatusOK {
+		t.Errorf("Expected status 200, got %d. Body: %s", resp.Code, resp.Body.String())
+		return
+	}
+
+	// Verify in database
+	var product ProductMap
+	db.First(&product, 1)
+	if product.ProductName != "Coffee" {
+		t.Errorf("Expected 'Coffee', got %s", product.ProductName)
+	}
+
+	// Test upsert
+	makeRequest(t, mux, "POST", "/createProductMapping", map[string]interface{}{
+		"id": 1, "product_name": "Espresso",
+	}, true)
+
+	db.First(&product, 1)
+	if product.ProductName != "Espresso" {
+		t.Errorf("Expected 'Espresso' after upsert, got %s", product.ProductName)
+	}
+}
+
+func TestDeleteProductMapping(t *testing.T) {
+	mux := setupTestEnvironment(t)
+	defer teardownTestEnvironment(t)
+
+	db.Create(&ProductMap{ID: 5, ProductName: "Juice"})
+
+	resp := makeRequest(t, mux, "POST", "/deleteProductMapping", map[string]interface{}{"id": 5}, true)
+
+	if resp.Code != http.StatusOK {
+		t.Errorf("Expected status 200, got %d", resp.Code)
+	}
+
+	// Verify deleted
+	var product ProductMap
+	err := db.First(&product, 5).Error
+	if err == nil {
+		t.Error("Product should have been deleted")
+	}
+
+	// Test non-existent
+	resp = makeRequest(t, mux, "POST", "/deleteProductMapping", map[string]interface{}{"id": 999}, true)
+	if resp.Code != http.StatusNotFound {
+		t.Errorf("Expected 404, got %d", resp.Code)
+	}
+}
+
+func TestDeleteVoucher(t *testing.T) {
+	mux := setupTestEnvironment(t)
+	defer teardownTestEnvironment(t)
+
+	ensureUser("voucher-del-user")
+
+	// Create an unused voucher
+	voucher := VendVoucher{UID: "voucher-del-user", MachineID: "VM1", Used: false}
+	db.Create(&voucher)
+
+	resp := makeRequest(t, mux, "POST", "/deleteVoucher", map[string]interface{}{"id": voucher.ID}, true)
+	if resp.Code != http.StatusOK {
+		t.Errorf("Expected 200, got %d. Body: %s", resp.Code, resp.Body.String())
+	}
+
+	// Verify deleted
+	err := db.First(&VendVoucher{}, voucher.ID).Error
+	if err == nil {
+		t.Error("Voucher should have been deleted")
+	}
+
+	// Create a used voucher and try to delete
+	usedVoucher := VendVoucher{UID: "voucher-del-user", MachineID: "VM2", Used: true}
+	db.Create(&usedVoucher)
+
+	resp = makeRequest(t, mux, "POST", "/deleteVoucher", map[string]interface{}{"id": usedVoucher.ID}, true)
+	if resp.Code != http.StatusBadRequest {
+		t.Errorf("Expected 400 for used voucher, got %d", resp.Code)
+	}
+
+	// Test non-existent
+	resp = makeRequest(t, mux, "POST", "/deleteVoucher", map[string]interface{}{"id": 99999}, true)
+	if resp.Code != http.StatusNotFound {
+		t.Errorf("Expected 404, got %d", resp.Code)
+	}
+}
+
+func TestDeletePrivilege(t *testing.T) {
+	mux := setupTestEnvironment(t)
+	defer teardownTestEnvironment(t)
+
+	ensureUser("priv-del-user")
+
+	privilege := UserMachinePrivilege{UID: "priv-del-user", MachineID: "VM1", FreeVend: true}
+	db.Create(&privilege)
+
+	resp := makeRequest(t, mux, "POST", "/deletePrivilege", map[string]interface{}{
+		"uid": "priv-del-user", "machine_id": "VM1",
+	}, true)
+
+	if resp.Code != http.StatusOK {
+		t.Errorf("Expected 200, got %d. Body: %s", resp.Code, resp.Body.String())
+	}
+
+	// Verify deleted
+	var p UserMachinePrivilege
+	err := db.Where("uid = ? AND machine_id = ?", "priv-del-user", "VM1").First(&p).Error
+	if err == nil {
+		t.Error("Privilege should have been deleted")
+	}
+
+	// Test non-existent
+	resp = makeRequest(t, mux, "POST", "/deletePrivilege", map[string]interface{}{
+		"uid": "nobody", "machine_id": "nowhere",
+	}, true)
+	if resp.Code != http.StatusNotFound {
+		t.Errorf("Expected 404, got %d", resp.Code)
 	}
 }

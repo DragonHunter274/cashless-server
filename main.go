@@ -137,6 +137,53 @@ type PrivilegeRequest struct {
 	FreeVend  bool   `json:"free_vend"`
 }
 
+type StatsResponse struct {
+	TotalUsers            int64         `json:"total_users"`
+	TotalRevenue          int64         `json:"total_revenue"`
+	TotalTransactions     int64         `json:"total_transactions"`
+	ConfirmedTransactions int64         `json:"confirmed_transactions"`
+	PendingTransactions   int64         `json:"pending_transactions"`
+	FailedTransactions    int64         `json:"failed_transactions"`
+	ActiveVouchers        int64         `json:"active_vouchers"`
+	UsedVouchers          int64         `json:"used_vouchers"`
+	TotalPrivileges       int64         `json:"total_privileges"`
+	RecentTransactions    []Transaction `json:"recent_transactions"`
+}
+
+type GetUsersRequest struct {
+	Limit  int    `json:"limit"`
+	Offset int    `json:"offset"`
+	Search string `json:"search"`
+}
+
+type UserWithBalance struct {
+	UID       string    `json:"uid"`
+	Balance   int       `json:"balance"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
+type GetUsersResponse struct {
+	Users []UserWithBalance `json:"users"`
+	Total int64             `json:"total"`
+}
+
+type CreateAPIKeyRequest struct {
+	AllowedEndpoints string `json:"allowed_endpoints"`
+}
+
+type DeleteAPIKeyRequest struct {
+	Key string `json:"key"`
+}
+
+type ProductMapRequest struct {
+	ID          int    `json:"id"`
+	ProductName string `json:"product_name"`
+}
+
+type DeleteByIDRequest struct {
+	ID uint `json:"id"`
+}
+
 var db *gorm.DB
 
 type PurchaseCollector struct {
@@ -320,7 +367,7 @@ func setupTestMode() (*embeddedpostgres.EmbeddedPostgres, string, error) {
 	apiKey := generateAPIKey()
 	key := APIKey{
 		Key:              apiKey,
-		AllowedEndpoints: "/makePurchase,/confirmPurchase,/makeCashPurchase,/getBalance,/getTransactions,/getVouchers,/getPrivileges,/topUp,/createUser,/createVoucher,/createPrivilege",
+		AllowedEndpoints: "/makePurchase,/confirmPurchase,/makeCashPurchase,/getBalance,/getTransactions,/getVouchers,/getPrivileges,/topUp,/createUser,/createVoucher,/createPrivilege,/getStats,/getUsers,/getAPIKeys,/createAPIKey,/deleteAPIKey,/getProductMap,/createProductMapping,/deleteProductMapping,/deleteVoucher,/deletePrivilege",
 	}
 	if err := db.Create(&key).Error; err != nil {
 		embeddedPG.Stop()
@@ -747,6 +794,260 @@ func createPrivilegeHandler(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 }
 
+func getStatsHandler(w http.ResponseWriter, r *http.Request) {
+	var stats StatsResponse
+
+	db.Model(&User{}).Count(&stats.TotalUsers)
+	db.Model(&TransactionModel{}).Count(&stats.TotalTransactions)
+	db.Model(&TransactionModel{}).Where("status = ?", "confirmed").Count(&stats.ConfirmedTransactions)
+	db.Model(&TransactionModel{}).Where("status = ?", "pending").Count(&stats.PendingTransactions)
+	db.Model(&TransactionModel{}).Where("status = ?", "failed").Count(&stats.FailedTransactions)
+	db.Model(&VendVoucher{}).Where("used = ?", false).Count(&stats.ActiveVouchers)
+	db.Model(&VendVoucher{}).Where("used = ?", true).Count(&stats.UsedVouchers)
+	db.Model(&UserMachinePrivilege{}).Count(&stats.TotalPrivileges)
+
+	var revenueResult struct{ Total int64 }
+	db.Model(&TransactionModel{}).
+		Select("COALESCE(SUM(ABS(amount)), 0) as total").
+		Where("status = ? AND amount < 0", "confirmed").
+		Scan(&revenueResult)
+	stats.TotalRevenue = revenueResult.Total
+
+	var recentTx []TransactionModel
+	db.Order("created_at DESC").Limit(10).Find(&recentTx)
+	for _, t := range recentTx {
+		stats.RecentTransactions = append(stats.RecentTransactions, Transaction{
+			ID:        int(t.ID),
+			UID:       t.UID,
+			Amount:    t.Amount,
+			Product:   t.Product,
+			Status:    t.Status,
+			Method:    t.PaymentMethod,
+			MachineID: t.MachineID,
+			CreatedAt: t.CreatedAt,
+		})
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(stats)
+}
+
+func getUsersHandler(w http.ResponseWriter, r *http.Request) {
+	var req GetUsersRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "Invalid request", http.StatusBadRequest)
+		return
+	}
+
+	if req.Limit <= 0 {
+		req.Limit = 50
+	}
+	if req.Limit > 500 {
+		req.Limit = 500
+	}
+
+	query := db.Model(&User{})
+	if req.Search != "" {
+		query = query.Where("uid ILIKE ?", "%"+req.Search+"%")
+	}
+
+	var total int64
+	query.Count(&total)
+
+	var users []User
+	query.Order("created_at DESC").Limit(req.Limit).Offset(req.Offset).Find(&users)
+
+	var result []UserWithBalance
+	for _, u := range users {
+		var balanceResult struct{ Balance int }
+		db.Model(&TransactionModel{}).
+			Select("COALESCE(SUM(amount), 0) as balance").
+			Where("uid = ? AND status = ?", u.UID, "confirmed").
+			Scan(&balanceResult)
+
+		result = append(result, UserWithBalance{
+			UID:       u.UID,
+			Balance:   balanceResult.Balance,
+			CreatedAt: u.CreatedAt,
+		})
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(GetUsersResponse{Users: result, Total: total})
+}
+
+func getAPIKeysHandler(w http.ResponseWriter, r *http.Request) {
+	var keys []APIKey
+	db.Order("created_at DESC").Find(&keys)
+
+	type MaskedKey struct {
+		Key              string    `json:"key"`
+		AllowedEndpoints string    `json:"allowed_endpoints"`
+		CreatedAt        time.Time `json:"created_at"`
+	}
+
+	var masked []MaskedKey
+	for _, k := range keys {
+		maskedKey := k.Key
+		if len(k.Key) > 8 {
+			maskedKey = k.Key[:4] + "..." + k.Key[len(k.Key)-4:]
+		}
+		masked = append(masked, MaskedKey{
+			Key:              maskedKey,
+			AllowedEndpoints: k.AllowedEndpoints,
+			CreatedAt:        k.CreatedAt,
+		})
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(masked)
+}
+
+func createAPIKeyHandler(w http.ResponseWriter, r *http.Request) {
+	var req CreateAPIKeyRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "Invalid request", http.StatusBadRequest)
+		return
+	}
+
+	if req.AllowedEndpoints == "" {
+		http.Error(w, "allowed_endpoints is required", http.StatusBadRequest)
+		return
+	}
+
+	key := APIKey{
+		Key:              generateAPIKey(),
+		AllowedEndpoints: req.AllowedEndpoints,
+	}
+
+	if err := db.Create(&key).Error; err != nil {
+		http.Error(w, "Failed to create API key", http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusCreated)
+	json.NewEncoder(w).Encode(key)
+}
+
+func deleteAPIKeyHandler(w http.ResponseWriter, r *http.Request) {
+	var req DeleteAPIKeyRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Key == "" {
+		http.Error(w, "Invalid request", http.StatusBadRequest)
+		return
+	}
+
+	// Prevent self-deletion
+	currentKey := r.Header.Get("X-API-Key")
+	if req.Key == currentKey {
+		http.Error(w, "Cannot delete the API key currently in use", http.StatusBadRequest)
+		return
+	}
+
+	result := db.Where("key = ?", req.Key).Delete(&APIKey{})
+	if result.Error != nil {
+		http.Error(w, "Database error", http.StatusInternalServerError)
+		return
+	}
+	if result.RowsAffected == 0 {
+		http.Error(w, "API key not found", http.StatusNotFound)
+		return
+	}
+
+	w.WriteHeader(http.StatusOK)
+}
+
+func getProductMapHandler(w http.ResponseWriter, r *http.Request) {
+	var products []ProductMap
+	db.Order("id ASC").Find(&products)
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(products)
+}
+
+func createProductMappingHandler(w http.ResponseWriter, r *http.Request) {
+	var req ProductMapRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "Invalid request", http.StatusBadRequest)
+		return
+	}
+
+	if req.ID <= 0 || req.ProductName == "" {
+		http.Error(w, "id and product_name are required", http.StatusBadRequest)
+		return
+	}
+
+	product := ProductMap{ID: req.ID, ProductName: req.ProductName}
+	if err := db.Save(&product).Error; err != nil {
+		http.Error(w, "Failed to save product mapping", http.StatusInternalServerError)
+		return
+	}
+
+	w.WriteHeader(http.StatusOK)
+}
+
+func deleteProductMappingHandler(w http.ResponseWriter, r *http.Request) {
+	var req DeleteByIDRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.ID == 0 {
+		http.Error(w, "Invalid request", http.StatusBadRequest)
+		return
+	}
+
+	result := db.Where("id = ?", req.ID).Delete(&ProductMap{})
+	if result.Error != nil {
+		http.Error(w, "Database error", http.StatusInternalServerError)
+		return
+	}
+	if result.RowsAffected == 0 {
+		http.Error(w, "Product mapping not found", http.StatusNotFound)
+		return
+	}
+
+	w.WriteHeader(http.StatusOK)
+}
+
+func deleteVoucherHandler(w http.ResponseWriter, r *http.Request) {
+	var req DeleteByIDRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.ID == 0 {
+		http.Error(w, "Invalid request", http.StatusBadRequest)
+		return
+	}
+
+	var voucher VendVoucher
+	if err := db.First(&voucher, req.ID).Error; err != nil {
+		http.Error(w, "Voucher not found", http.StatusNotFound)
+		return
+	}
+
+	if voucher.Used {
+		http.Error(w, "Cannot delete used voucher", http.StatusBadRequest)
+		return
+	}
+
+	db.Delete(&voucher)
+	w.WriteHeader(http.StatusOK)
+}
+
+func deletePrivilegeHandler(w http.ResponseWriter, r *http.Request) {
+	var req VoucherRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.UID == "" || req.MachineID == "" {
+		http.Error(w, "Invalid request", http.StatusBadRequest)
+		return
+	}
+
+	result := db.Where("uid = ? AND machine_id = ?", req.UID, req.MachineID).Delete(&UserMachinePrivilege{})
+	if result.Error != nil {
+		http.Error(w, "Database error", http.StatusInternalServerError)
+		return
+	}
+	if result.RowsAffected == 0 {
+		http.Error(w, "Privilege not found", http.StatusNotFound)
+		return
+	}
+
+	w.WriteHeader(http.StatusOK)
+}
+
 func ternary[T any](cond bool, a, b T) T {
 	if cond {
 		return a
@@ -1151,6 +1452,16 @@ func main() {
 	mux.HandleFunc("/createPrivilege", apiKeyMiddleware(createPrivilegeHandler))
 	mux.HandleFunc("/makeCashPurchase", apiKeyMiddleware(cashPurchaseHandler))
 	mux.HandleFunc("/topUp", apiKeyMiddleware(topUpHandler))
+	mux.HandleFunc("/getStats", apiKeyMiddleware(getStatsHandler))
+	mux.HandleFunc("/getUsers", apiKeyMiddleware(getUsersHandler))
+	mux.HandleFunc("/getAPIKeys", apiKeyMiddleware(getAPIKeysHandler))
+	mux.HandleFunc("/createAPIKey", apiKeyMiddleware(createAPIKeyHandler))
+	mux.HandleFunc("/deleteAPIKey", apiKeyMiddleware(deleteAPIKeyHandler))
+	mux.HandleFunc("/getProductMap", apiKeyMiddleware(getProductMapHandler))
+	mux.HandleFunc("/createProductMapping", apiKeyMiddleware(createProductMappingHandler))
+	mux.HandleFunc("/deleteProductMapping", apiKeyMiddleware(deleteProductMappingHandler))
+	mux.HandleFunc("/deleteVoucher", apiKeyMiddleware(deleteVoucherHandler))
+	mux.HandleFunc("/deletePrivilege", apiKeyMiddleware(deletePrivilegeHandler))
 	mux.Handle("/metrics", promhttp.Handler())
 	mux.HandleFunc("/api/v1/read", remoteReadHandler) // Prometheus Remote Read endpoint (no auth required)
 
