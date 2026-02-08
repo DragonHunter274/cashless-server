@@ -16,11 +16,13 @@ import (
 	"syscall"
 	"time"
 
+	oidc "github.com/coreos/go-oidc/v3/oidc"
 	embeddedpostgres "github.com/fergusstrange/embedded-postgres"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/prometheus/prometheus/prompb"
 	"github.com/prometheus/prometheus/storage/remote"
+	"golang.org/x/oauth2"
 	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
 	"gorm.io/gorm/logger"
@@ -71,6 +73,27 @@ type APIKey struct {
 type ProductMap struct {
 	ID          int    `gorm:"primaryKey" json:"id"`
 	ProductName string `json:"product_name"`
+}
+
+type Session struct {
+	Token     string    `gorm:"primaryKey;size:64"`
+	Email     string
+	Name      string
+	Subject   string // OIDC sub claim
+	Role      string // "admin" or "user"
+	ExpiresAt time.Time
+	CreatedAt time.Time `gorm:"default:CURRENT_TIMESTAMP"`
+}
+
+// Auth context types
+type contextKey string
+
+const authContextKey contextKey = "auth"
+
+type authInfo struct {
+	Method string // "apikey" or "oidc"
+	Role   string // "admin" or "user"
+	Email  string
 }
 
 // Request/Response structs
@@ -185,6 +208,17 @@ type DeleteByIDRequest struct {
 }
 
 var db *gorm.DB
+
+// OIDC state
+var (
+	oidcEnabled    bool
+	oidcProvider   *oidc.Provider
+	oauth2Config   *oauth2.Config
+	oidcVerifier   *oidc.IDTokenVerifier
+	oidcAdminClaim string
+	oidcAdminValue string
+	sessionTTL     time.Duration
+)
 
 type PurchaseCollector struct {
 	purchaseDesc  *prometheus.Desc
@@ -321,6 +355,7 @@ func initDB() error {
 		&TransactionModel{},
 		&APIKey{},
 		&ProductMap{},
+		&Session{},
 	)
 	if err != nil {
 		return err
@@ -330,7 +365,73 @@ func initDB() error {
 	db.Exec("CREATE INDEX IF NOT EXISTS idx_transactions_status ON transactions(status)")
 	db.Exec("CREATE INDEX IF NOT EXISTS idx_transactions_uid ON transactions(uid)")
 	db.Exec("CREATE INDEX IF NOT EXISTS idx_transactions_metrics ON transactions(status, amount, product, machine_id, is_cash, payment_method)")
+	db.Exec("CREATE INDEX IF NOT EXISTS idx_sessions_expires_at ON sessions(expires_at)")
 
+	return nil
+}
+
+func initOIDC() error {
+	issuer := os.Getenv("OIDC_ISSUER")
+	if issuer == "" {
+		oidcEnabled = false
+		return nil
+	}
+
+	clientID := os.Getenv("OIDC_CLIENT_ID")
+	clientSecret := os.Getenv("OIDC_CLIENT_SECRET")
+	redirectURL := os.Getenv("OIDC_REDIRECT_URL")
+	if redirectURL == "" {
+		redirectURL = "http://localhost:8080/auth/callback"
+	}
+
+	oidcAdminClaim = os.Getenv("OIDC_ADMIN_CLAIM")
+	if oidcAdminClaim == "" {
+		oidcAdminClaim = "groups"
+	}
+	oidcAdminValue = os.Getenv("OIDC_ADMIN_VALUE")
+	if oidcAdminValue == "" {
+		oidcAdminValue = "admin"
+	}
+
+	ttlStr := os.Getenv("OIDC_SESSION_TTL")
+	if ttlStr == "" {
+		ttlStr = "24h"
+	}
+	var err error
+	sessionTTL, err = time.ParseDuration(ttlStr)
+	if err != nil {
+		sessionTTL = 24 * time.Hour
+	}
+
+	scopesStr := os.Getenv("OIDC_SCOPES")
+	if scopesStr == "" {
+		scopesStr = "openid,profile,email"
+	}
+	scopes := strings.Split(scopesStr, ",")
+	for i := range scopes {
+		scopes[i] = strings.TrimSpace(scopes[i])
+	}
+
+	ctx := context.Background()
+	provider, err := oidc.NewProvider(ctx, issuer)
+	if err != nil {
+		log.Printf("WARNING: OIDC provider discovery failed: %v (OIDC disabled)", err)
+		oidcEnabled = false
+		return nil
+	}
+
+	oidcProvider = provider
+	oidcVerifier = provider.Verifier(&oidc.Config{ClientID: clientID})
+	oauth2Config = &oauth2.Config{
+		ClientID:     clientID,
+		ClientSecret: clientSecret,
+		RedirectURL:  redirectURL,
+		Endpoint:     provider.Endpoint(),
+		Scopes:       scopes,
+	}
+
+	oidcEnabled = true
+	log.Printf("OIDC authentication enabled (issuer: %s)", issuer)
 	return nil
 }
 
@@ -377,37 +478,59 @@ func setupTestMode() (*embeddedpostgres.EmbeddedPostgres, string, error) {
 	return embeddedPG, apiKey, nil
 }
 
-func apiKeyMiddleware(next http.HandlerFunc) http.HandlerFunc {
+func authMiddleware(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		// Check API key first
 		apiKey := r.Header.Get("X-API-Key")
-		if apiKey == "" {
-			http.Error(w, "Missing API key", http.StatusUnauthorized)
+		if apiKey != "" {
+			var key APIKey
+			err := db.Where("key = ?", apiKey).First(&key).Error
+			if err != nil {
+				http.Error(w, "Invalid API key", http.StatusForbidden)
+				return
+			}
+
+			requestedPath := r.URL.Path
+			allowed := false
+			for _, endpoint := range strings.Split(key.AllowedEndpoints, ",") {
+				if strings.TrimSpace(endpoint) == requestedPath {
+					allowed = true
+					break
+				}
+			}
+
+			if !allowed {
+				http.Error(w, "API key not authorized for this endpoint", http.StatusForbidden)
+				return
+			}
+
+			ctx := context.WithValue(r.Context(), authContextKey, authInfo{
+				Method: "apikey",
+				Role:   "admin",
+			})
+			next.ServeHTTP(w, r.WithContext(ctx))
 			return
 		}
 
-		var key APIKey
-		err := db.Where("key = ?", apiKey).First(&key).Error
-		if err != nil {
-			http.Error(w, "Invalid API key", http.StatusForbidden)
-			return
-		}
-
-		// Check if the requested path is allowed
-		requestedPath := r.URL.Path
-		allowed := false
-		for _, endpoint := range strings.Split(key.AllowedEndpoints, ",") {
-			if strings.TrimSpace(endpoint) == requestedPath {
-				allowed = true
-				break
+		// Check OIDC session cookie
+		if oidcEnabled {
+			cookie, err := r.Cookie("session")
+			if err == nil {
+				var session Session
+				err := db.Where("token = ? AND expires_at > ?", cookie.Value, time.Now()).First(&session).Error
+				if err == nil {
+					ctx := context.WithValue(r.Context(), authContextKey, authInfo{
+						Method: "oidc",
+						Role:   session.Role,
+						Email:  session.Email,
+					})
+					next.ServeHTTP(w, r.WithContext(ctx))
+					return
+				}
 			}
 		}
 
-		if !allowed {
-			http.Error(w, "API key not authorized for this endpoint", http.StatusForbidden)
-			return
-		}
-
-		next.ServeHTTP(w, r)
+		http.Error(w, "Authentication required", http.StatusUnauthorized)
 	}
 }
 
@@ -1048,6 +1171,174 @@ func deletePrivilegeHandler(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 }
 
+// OIDC Auth Handlers
+
+func authLoginHandler(w http.ResponseWriter, r *http.Request) {
+	if !oidcEnabled {
+		http.Error(w, "OIDC not configured", http.StatusNotFound)
+		return
+	}
+	state := generateAPIKey()
+	http.SetCookie(w, &http.Cookie{
+		Name:     "oidc_state",
+		Value:    state,
+		Path:     "/",
+		MaxAge:   300,
+		HttpOnly: true,
+		SameSite: http.SameSiteLaxMode,
+		Secure:   strings.HasPrefix(oauth2Config.RedirectURL, "https://"),
+	})
+	http.Redirect(w, r, oauth2Config.AuthCodeURL(state), http.StatusFound)
+}
+
+func authCallbackHandler(w http.ResponseWriter, r *http.Request) {
+	if !oidcEnabled {
+		http.Error(w, "OIDC not configured", http.StatusNotFound)
+		return
+	}
+
+	// Validate state
+	stateCookie, err := r.Cookie("oidc_state")
+	if err != nil || stateCookie.Value != r.URL.Query().Get("state") {
+		http.Error(w, "Invalid state", http.StatusBadRequest)
+		return
+	}
+
+	// Exchange code for tokens
+	oauth2Token, err := oauth2Config.Exchange(r.Context(), r.URL.Query().Get("code"))
+	if err != nil {
+		log.Printf("OIDC token exchange failed: %v", err)
+		http.Error(w, "Token exchange failed", http.StatusInternalServerError)
+		return
+	}
+
+	// Extract and verify ID token
+	rawIDToken, ok := oauth2Token.Extra("id_token").(string)
+	if !ok {
+		http.Error(w, "No ID token in response", http.StatusInternalServerError)
+		return
+	}
+
+	idToken, err := oidcVerifier.Verify(r.Context(), rawIDToken)
+	if err != nil {
+		log.Printf("OIDC ID token verification failed: %v", err)
+		http.Error(w, "Invalid ID token", http.StatusInternalServerError)
+		return
+	}
+
+	// Extract claims
+	var claims map[string]interface{}
+	if err := idToken.Claims(&claims); err != nil {
+		http.Error(w, "Failed to parse claims", http.StatusInternalServerError)
+		return
+	}
+
+	email, _ := claims["email"].(string)
+	name, _ := claims["name"].(string)
+	sub := idToken.Subject
+
+	// Determine role
+	role := "user"
+	if claimValue, ok := claims[oidcAdminClaim]; ok {
+		switch v := claimValue.(type) {
+		case string:
+			if v == oidcAdminValue {
+				role = "admin"
+			}
+		case []interface{}:
+			for _, item := range v {
+				if str, ok := item.(string); ok && str == oidcAdminValue {
+					role = "admin"
+					break
+				}
+			}
+		}
+	}
+
+	// Create session
+	sessionToken := generateAPIKey()
+	session := Session{
+		Token:     sessionToken,
+		Email:     email,
+		Name:      name,
+		Subject:   sub,
+		Role:      role,
+		ExpiresAt: time.Now().Add(sessionTTL),
+	}
+	db.Create(&session)
+
+	// Set session cookie
+	http.SetCookie(w, &http.Cookie{
+		Name:     "session",
+		Value:    sessionToken,
+		Path:     "/",
+		MaxAge:   int(sessionTTL.Seconds()),
+		HttpOnly: true,
+		SameSite: http.SameSiteLaxMode,
+		Secure:   strings.HasPrefix(oauth2Config.RedirectURL, "https://"),
+	})
+
+	// Clear state cookie
+	http.SetCookie(w, &http.Cookie{
+		Name:   "oidc_state",
+		Path:   "/",
+		MaxAge: -1,
+	})
+
+	http.Redirect(w, r, "/", http.StatusFound)
+}
+
+func authLogoutHandler(w http.ResponseWriter, r *http.Request) {
+	cookie, err := r.Cookie("session")
+	if err == nil {
+		db.Where("token = ?", cookie.Value).Delete(&Session{})
+	}
+
+	// Clear session cookie
+	http.SetCookie(w, &http.Cookie{
+		Name:   "session",
+		Path:   "/",
+		MaxAge: -1,
+	})
+
+	w.WriteHeader(http.StatusOK)
+}
+
+func authMeHandler(w http.ResponseWriter, r *http.Request) {
+	cookie, err := r.Cookie("session")
+	if err != nil {
+		http.Error(w, "Not authenticated", http.StatusUnauthorized)
+		return
+	}
+
+	var session Session
+	err = db.Where("token = ? AND expires_at > ?", cookie.Value, time.Now()).First(&session).Error
+	if err != nil {
+		http.Error(w, "Session expired", http.StatusUnauthorized)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"authenticated": true,
+		"email":         session.Email,
+		"name":          session.Name,
+		"role":          session.Role,
+	})
+}
+
+func startSessionCleanup() {
+	go func() {
+		for {
+			time.Sleep(1 * time.Hour)
+			result := db.Where("expires_at < ?", time.Now()).Delete(&Session{})
+			if result.RowsAffected > 0 {
+				log.Printf("Cleaned up %d expired sessions", result.RowsAffected)
+			}
+		}
+	}()
+}
+
 func ternary[T any](cond bool, a, b T) T {
 	if cond {
 		return a
@@ -1057,18 +1348,21 @@ func ternary[T any](cond bool, a, b T) T {
 
 func corsMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Set CORS headers
-		w.Header().Set("Access-Control-Allow-Origin", "*")
+		origin := r.Header.Get("Origin")
+		if origin != "" {
+			w.Header().Set("Access-Control-Allow-Origin", origin)
+			w.Header().Set("Access-Control-Allow-Credentials", "true")
+		} else {
+			w.Header().Set("Access-Control-Allow-Origin", "*")
+		}
 		w.Header().Set("Access-Control-Allow-Methods", "POST, GET, OPTIONS")
 		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, X-API-Key")
 
-		// Handle preflight OPTIONS request
 		if r.Method == "OPTIONS" {
 			w.WriteHeader(http.StatusOK)
 			return
 		}
 
-		// Continue to the next handler
 		next.ServeHTTP(w, r)
 	})
 }
@@ -1432,6 +1726,14 @@ func main() {
 		}
 	}
 
+	// Initialize OIDC (optional - disabled if env vars not set)
+	if err := initOIDC(); err != nil {
+		log.Fatal(err)
+	}
+
+	// Start session cleanup goroutine
+	startSessionCleanup()
+
 	// Get underlying SQL DB for connection management
 	sqlDB, err := db.DB()
 	if err != nil {
@@ -1441,27 +1743,35 @@ func main() {
 
 	mux := http.NewServeMux()
 
-	mux.HandleFunc("/makePurchase", apiKeyMiddleware(makePurchaseHandler))
-	mux.HandleFunc("/confirmPurchase", apiKeyMiddleware(confirmPurchaseHandler))
-	mux.HandleFunc("/getBalance", apiKeyMiddleware(getBalanceHandler))
-	mux.HandleFunc("/getTransactions", apiKeyMiddleware(getTransactionsHandler))
-	mux.HandleFunc("/getVouchers", apiKeyMiddleware(getVouchersHandler))
-	mux.HandleFunc("/getPrivileges", apiKeyMiddleware(getPrivilegesHandler))
-	mux.HandleFunc("/createUser", apiKeyMiddleware(createUserHandler))
-	mux.HandleFunc("/createVoucher", apiKeyMiddleware(createVoucherHandler))
-	mux.HandleFunc("/createPrivilege", apiKeyMiddleware(createPrivilegeHandler))
-	mux.HandleFunc("/makeCashPurchase", apiKeyMiddleware(cashPurchaseHandler))
-	mux.HandleFunc("/topUp", apiKeyMiddleware(topUpHandler))
-	mux.HandleFunc("/getStats", apiKeyMiddleware(getStatsHandler))
-	mux.HandleFunc("/getUsers", apiKeyMiddleware(getUsersHandler))
-	mux.HandleFunc("/getAPIKeys", apiKeyMiddleware(getAPIKeysHandler))
-	mux.HandleFunc("/createAPIKey", apiKeyMiddleware(createAPIKeyHandler))
-	mux.HandleFunc("/deleteAPIKey", apiKeyMiddleware(deleteAPIKeyHandler))
-	mux.HandleFunc("/getProductMap", apiKeyMiddleware(getProductMapHandler))
-	mux.HandleFunc("/createProductMapping", apiKeyMiddleware(createProductMappingHandler))
-	mux.HandleFunc("/deleteProductMapping", apiKeyMiddleware(deleteProductMappingHandler))
-	mux.HandleFunc("/deleteVoucher", apiKeyMiddleware(deleteVoucherHandler))
-	mux.HandleFunc("/deletePrivilege", apiKeyMiddleware(deletePrivilegeHandler))
+	mux.HandleFunc("/makePurchase", authMiddleware(makePurchaseHandler))
+	mux.HandleFunc("/confirmPurchase", authMiddleware(confirmPurchaseHandler))
+	mux.HandleFunc("/getBalance", authMiddleware(getBalanceHandler))
+	mux.HandleFunc("/getTransactions", authMiddleware(getTransactionsHandler))
+	mux.HandleFunc("/getVouchers", authMiddleware(getVouchersHandler))
+	mux.HandleFunc("/getPrivileges", authMiddleware(getPrivilegesHandler))
+	mux.HandleFunc("/createUser", authMiddleware(createUserHandler))
+	mux.HandleFunc("/createVoucher", authMiddleware(createVoucherHandler))
+	mux.HandleFunc("/createPrivilege", authMiddleware(createPrivilegeHandler))
+	mux.HandleFunc("/makeCashPurchase", authMiddleware(cashPurchaseHandler))
+	mux.HandleFunc("/topUp", authMiddleware(topUpHandler))
+	mux.HandleFunc("/getStats", authMiddleware(getStatsHandler))
+	mux.HandleFunc("/getUsers", authMiddleware(getUsersHandler))
+	mux.HandleFunc("/getAPIKeys", authMiddleware(getAPIKeysHandler))
+	mux.HandleFunc("/createAPIKey", authMiddleware(createAPIKeyHandler))
+	mux.HandleFunc("/deleteAPIKey", authMiddleware(deleteAPIKeyHandler))
+	mux.HandleFunc("/getProductMap", authMiddleware(getProductMapHandler))
+	mux.HandleFunc("/createProductMapping", authMiddleware(createProductMappingHandler))
+	mux.HandleFunc("/deleteProductMapping", authMiddleware(deleteProductMappingHandler))
+	mux.HandleFunc("/deleteVoucher", authMiddleware(deleteVoucherHandler))
+	mux.HandleFunc("/deletePrivilege", authMiddleware(deletePrivilegeHandler))
+	// OIDC auth routes (no auth required, registered only if OIDC is enabled)
+	if oidcEnabled {
+		mux.HandleFunc("/auth/login", authLoginHandler)
+		mux.HandleFunc("/auth/callback", authCallbackHandler)
+		mux.HandleFunc("/auth/logout", authLogoutHandler)
+		mux.HandleFunc("/auth/me", authMeHandler)
+	}
+
 	mux.Handle("/metrics", promhttp.Handler())
 	mux.HandleFunc("/api/v1/read", remoteReadHandler) // Prometheus Remote Read endpoint (no auth required)
 

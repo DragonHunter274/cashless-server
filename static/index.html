@@ -630,6 +630,13 @@
             </button>
             <label for="apiKeyInput">API Key:</label>
             <input type="password" id="apiKeyInput" placeholder="Enter your API key to get started">
+            <div id="oidcAuth" style="margin-left: auto; display: flex; align-items: center; gap: 12px;">
+                <button id="ssoLoginBtn" class="btn btn-primary" onclick="window.location.href='/auth/login'" style="display: none;">Login with SSO</button>
+                <div id="userInfo" style="display: none; align-items: center; gap: 12px;">
+                    <span id="userName" style="font-size: 13px; color: var(--text-muted);"></span>
+                    <button class="btn btn-secondary" onclick="logoutOIDC()" style="padding: 6px 12px; font-size: 12px;">Logout</button>
+                </div>
+            </div>
         </div>
 
         <div class="content">
@@ -848,6 +855,7 @@
     let pendingTxs = [];
     let usersOffset = 0;
     let txOffset = 0;
+    let oidcUser = null; // {authenticated, email, name, role}
 
     // Debounce helper
     function debounce(fn, ms) {
@@ -862,11 +870,52 @@
         return document.getElementById('apiKeyInput').value;
     }
 
+    // Check OIDC authentication status
+    async function checkOIDCAuth() {
+        try {
+            const resp = await fetch(API + '/auth/me', { credentials: 'same-origin' });
+            if (resp.ok) {
+                oidcUser = await resp.json();
+                document.getElementById('userName').textContent = oidcUser.name || oidcUser.email;
+                document.getElementById('userInfo').style.display = 'flex';
+                document.getElementById('ssoLoginBtn').style.display = 'none';
+                loadPageData(currentPage);
+            } else {
+                oidcUser = null;
+                document.getElementById('ssoLoginBtn').style.display = 'block';
+                document.getElementById('userInfo').style.display = 'none';
+            }
+        } catch (e) {
+            // OIDC not available or error - hide SSO UI
+            document.getElementById('ssoLoginBtn').style.display = 'none';
+            document.getElementById('userInfo').style.display = 'none';
+        }
+    }
+
+    // Logout from OIDC
+    async function logoutOIDC() {
+        try {
+            await fetch(API + '/auth/logout', { method: 'POST', credentials: 'same-origin' });
+            oidcUser = null;
+            document.getElementById('ssoLoginBtn').style.display = 'block';
+            document.getElementById('userInfo').style.display = 'none';
+            toast('Logged out successfully');
+            navigate('dashboard');
+        } catch (e) {
+            toast('Logout failed: ' + e.message, 'error');
+        }
+    }
+
     async function api(endpoint, body = null) {
         const opts = {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json', 'X-API-Key': getKey() }
+            method: endpoint.startsWith('/auth/') ? 'GET' : 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            credentials: 'same-origin'
         };
+        const apiKey = getKey();
+        if (apiKey) {
+            opts.headers['X-API-Key'] = apiKey;
+        }
         if (body !== null) opts.body = JSON.stringify(body);
         const resp = await fetch(API + endpoint, opts);
         const text = await resp.text();
@@ -919,7 +968,8 @@
     }
 
     function loadPageData(page) {
-        if (!getKey()) return;
+        // Require either API key or OIDC session
+        if (!getKey() && !oidcUser) return;
         switch (page) {
             case 'dashboard': loadDashboard(); break;
             case 'users': loadUsers(); break;
@@ -1400,6 +1450,9 @@
     document.getElementById('apiKeyInput').addEventListener('keyup', (e) => {
         if (e.key === 'Enter') loadPageData(currentPage);
     });
+
+    // Check OIDC authentication on page load
+    checkOIDCAuth();
 
     // Hash navigation
     const hash = window.location.hash.slice(1);

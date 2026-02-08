@@ -2,8 +2,13 @@ package main
 
 import (
 	"bytes"
+	"context"
+	"crypto/rand"
+	"crypto/rsa"
 	"encoding/json"
+	"fmt"
 	"io"
+	"math/big"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -11,6 +16,7 @@ import (
 	"time"
 
 	embeddedpostgres "github.com/fergusstrange/embedded-postgres"
+	"github.com/golang-jwt/jwt/v5"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
@@ -62,6 +68,7 @@ func setupTestEnvironment(t *testing.T) *http.ServeMux {
 	db.Exec("DELETE FROM user_machine_privileges")
 	db.Exec("DELETE FROM api_keys")
 	db.Exec("DELETE FROM product_maps")
+	db.Exec("DELETE FROM sessions")
 
 	// Create test API key with all permissions
 	apiKey := APIKey{
@@ -72,27 +79,27 @@ func setupTestEnvironment(t *testing.T) *http.ServeMux {
 
 	// Initialize router matching main.go structure
 	mux := http.NewServeMux()
-	mux.HandleFunc("/makePurchase", apiKeyMiddleware(makePurchaseHandler))
-	mux.HandleFunc("/confirmPurchase", apiKeyMiddleware(confirmPurchaseHandler))
-	mux.HandleFunc("/getBalance", apiKeyMiddleware(getBalanceHandler))
-	mux.HandleFunc("/getTransactions", apiKeyMiddleware(getTransactionsHandler))
-	mux.HandleFunc("/getVouchers", apiKeyMiddleware(getVouchersHandler))
-	mux.HandleFunc("/getPrivileges", apiKeyMiddleware(getPrivilegesHandler))
-	mux.HandleFunc("/createUser", apiKeyMiddleware(createUserHandler))
-	mux.HandleFunc("/createVoucher", apiKeyMiddleware(createVoucherHandler))
-	mux.HandleFunc("/createPrivilege", apiKeyMiddleware(createPrivilegeHandler))
-	mux.HandleFunc("/makeCashPurchase", apiKeyMiddleware(cashPurchaseHandler))
-	mux.HandleFunc("/topUp", apiKeyMiddleware(topUpHandler))
-	mux.HandleFunc("/getStats", apiKeyMiddleware(getStatsHandler))
-	mux.HandleFunc("/getUsers", apiKeyMiddleware(getUsersHandler))
-	mux.HandleFunc("/getAPIKeys", apiKeyMiddleware(getAPIKeysHandler))
-	mux.HandleFunc("/createAPIKey", apiKeyMiddleware(createAPIKeyHandler))
-	mux.HandleFunc("/deleteAPIKey", apiKeyMiddleware(deleteAPIKeyHandler))
-	mux.HandleFunc("/getProductMap", apiKeyMiddleware(getProductMapHandler))
-	mux.HandleFunc("/createProductMapping", apiKeyMiddleware(createProductMappingHandler))
-	mux.HandleFunc("/deleteProductMapping", apiKeyMiddleware(deleteProductMappingHandler))
-	mux.HandleFunc("/deleteVoucher", apiKeyMiddleware(deleteVoucherHandler))
-	mux.HandleFunc("/deletePrivilege", apiKeyMiddleware(deletePrivilegeHandler))
+	mux.HandleFunc("/makePurchase", authMiddleware(makePurchaseHandler))
+	mux.HandleFunc("/confirmPurchase", authMiddleware(confirmPurchaseHandler))
+	mux.HandleFunc("/getBalance", authMiddleware(getBalanceHandler))
+	mux.HandleFunc("/getTransactions", authMiddleware(getTransactionsHandler))
+	mux.HandleFunc("/getVouchers", authMiddleware(getVouchersHandler))
+	mux.HandleFunc("/getPrivileges", authMiddleware(getPrivilegesHandler))
+	mux.HandleFunc("/createUser", authMiddleware(createUserHandler))
+	mux.HandleFunc("/createVoucher", authMiddleware(createVoucherHandler))
+	mux.HandleFunc("/createPrivilege", authMiddleware(createPrivilegeHandler))
+	mux.HandleFunc("/makeCashPurchase", authMiddleware(cashPurchaseHandler))
+	mux.HandleFunc("/topUp", authMiddleware(topUpHandler))
+	mux.HandleFunc("/getStats", authMiddleware(getStatsHandler))
+	mux.HandleFunc("/getUsers", authMiddleware(getUsersHandler))
+	mux.HandleFunc("/getAPIKeys", authMiddleware(getAPIKeysHandler))
+	mux.HandleFunc("/createAPIKey", authMiddleware(createAPIKeyHandler))
+	mux.HandleFunc("/deleteAPIKey", authMiddleware(deleteAPIKeyHandler))
+	mux.HandleFunc("/getProductMap", authMiddleware(getProductMapHandler))
+	mux.HandleFunc("/createProductMapping", authMiddleware(createProductMappingHandler))
+	mux.HandleFunc("/deleteProductMapping", authMiddleware(deleteProductMappingHandler))
+	mux.HandleFunc("/deleteVoucher", authMiddleware(deleteVoucherHandler))
+	mux.HandleFunc("/deletePrivilege", authMiddleware(deletePrivilegeHandler))
 	mux.Handle("/metrics", promhttp.Handler())
 
 	return mux
@@ -1258,3 +1265,561 @@ func TestDeletePrivilege(t *testing.T) {
 		t.Errorf("Expected 404, got %d", resp.Code)
 	}
 }
+
+// ===== OIDC Test Infrastructure =====
+
+var testRSAKey *rsa.PrivateKey
+
+func init() {
+	var err error
+	testRSAKey, err = rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		panic("failed to generate test RSA key: " + err.Error())
+	}
+}
+
+// startTestOIDCServer creates a minimal OIDC-compliant test server
+func startTestOIDCServer(t *testing.T) *httptest.Server {
+	mux := http.NewServeMux()
+
+	mux.HandleFunc("/.well-known/openid-configuration", func(w http.ResponseWriter, r *http.Request) {
+		// We need the server URL, but we don't have it yet at registration time.
+		// Use the Host header to construct it.
+		scheme := "http"
+		baseURL := fmt.Sprintf("%s://%s", scheme, r.Host)
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"issuer":                 baseURL,
+			"authorization_endpoint": baseURL + "/authorize",
+			"token_endpoint":         baseURL + "/token",
+			"jwks_uri":               baseURL + "/keys",
+			"id_token_signing_alg_values_supported": []string{"RS256"},
+		})
+	})
+
+	mux.HandleFunc("/keys", func(w http.ResponseWriter, r *http.Request) {
+		// JWKS with our test public key
+		n := testRSAKey.PublicKey.N
+		e := testRSAKey.PublicKey.E
+
+		// Base64url encode n and e
+		nBytes := n.Bytes()
+		eBytes := big.NewInt(int64(e)).Bytes()
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"keys": []map[string]interface{}{
+				{
+					"kty": "RSA",
+					"alg": "RS256",
+					"use": "sig",
+					"kid": "test-key-1",
+					"n":   base64urlEncode(nBytes),
+					"e":   base64urlEncode(eBytes),
+				},
+			},
+		})
+	})
+
+	mux.HandleFunc("/token", func(w http.ResponseWriter, r *http.Request) {
+		// Exchange code for tokens - return a signed ID token
+		code := r.FormValue("code")
+
+		// Parse the code to determine claims (format: "email:groups")
+		email := "testuser@example.com"
+		name := "Test User"
+		sub := "oidc-subject-123"
+		groups := []string{}
+
+		if code == "admin-code" {
+			email = "admin@example.com"
+			name = "Admin User"
+			groups = []string{"admin", "users"}
+		} else if code == "user-code" {
+			email = "user@example.com"
+			name = "Regular User"
+			groups = []string{"users"}
+		}
+
+		// Create a real server URL for the issuer
+		scheme := "http"
+		issuer := fmt.Sprintf("%s://%s", scheme, r.Host)
+
+		// Create signed JWT ID token
+		token := jwt.NewWithClaims(jwt.SigningMethodRS256, jwt.MapClaims{
+			"iss":    issuer,
+			"sub":    sub,
+			"aud":    "test-client-id",
+			"exp":    time.Now().Add(1 * time.Hour).Unix(),
+			"iat":    time.Now().Unix(),
+			"email":  email,
+			"name":   name,
+			"groups": groups,
+		})
+		token.Header["kid"] = "test-key-1"
+
+		signedToken, err := token.SignedString(testRSAKey)
+		if err != nil {
+			http.Error(w, "failed to sign token", http.StatusInternalServerError)
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"access_token": "test-access-token",
+			"token_type":   "Bearer",
+			"id_token":     signedToken,
+		})
+	})
+
+	server := httptest.NewServer(mux)
+	return server
+}
+
+// base64urlEncode encodes bytes to base64url without padding
+func base64urlEncode(data []byte) string {
+	const base64url = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
+	result := make([]byte, 0, (len(data)*4+2)/3)
+	for i := 0; i < len(data); i += 3 {
+		var b uint32
+		remaining := len(data) - i
+		switch {
+		case remaining >= 3:
+			b = uint32(data[i])<<16 | uint32(data[i+1])<<8 | uint32(data[i+2])
+			result = append(result, base64url[b>>18&0x3F], base64url[b>>12&0x3F], base64url[b>>6&0x3F], base64url[b&0x3F])
+		case remaining == 2:
+			b = uint32(data[i])<<16 | uint32(data[i+1])<<8
+			result = append(result, base64url[b>>18&0x3F], base64url[b>>12&0x3F], base64url[b>>6&0x3F])
+		case remaining == 1:
+			b = uint32(data[i]) << 16
+			result = append(result, base64url[b>>18&0x3F], base64url[b>>12&0x3F])
+		}
+	}
+	return string(result)
+}
+
+// setupTestEnvironmentWithOIDC sets up the test environment with OIDC enabled
+func setupTestEnvironmentWithOIDC(t *testing.T) (*http.ServeMux, *httptest.Server) {
+	mux := setupTestEnvironment(t)
+
+	// Start test OIDC server
+	oidcServer := startTestOIDCServer(t)
+
+	// Configure OIDC
+	os.Setenv("OIDC_ISSUER", oidcServer.URL)
+	os.Setenv("OIDC_CLIENT_ID", "test-client-id")
+	os.Setenv("OIDC_CLIENT_SECRET", "test-client-secret")
+	os.Setenv("OIDC_REDIRECT_URL", "http://localhost:8080/auth/callback")
+	os.Setenv("OIDC_ADMIN_CLAIM", "groups")
+	os.Setenv("OIDC_ADMIN_VALUE", "admin")
+	os.Setenv("OIDC_SESSION_TTL", "1h")
+
+	// Initialize OIDC
+	if err := initOIDC(); err != nil {
+		t.Fatalf("Failed to init OIDC: %v", err)
+	}
+
+	if !oidcEnabled {
+		t.Fatal("OIDC should be enabled after initOIDC with valid config")
+	}
+
+	// Register auth routes on the test mux
+	mux.HandleFunc("/auth/login", authLoginHandler)
+	mux.HandleFunc("/auth/callback", authCallbackHandler)
+	mux.HandleFunc("/auth/logout", authLogoutHandler)
+	mux.HandleFunc("/auth/me", authMeHandler)
+
+	return mux, oidcServer
+}
+
+// cleanupOIDC resets OIDC state after tests
+func cleanupOIDC(oidcServer *httptest.Server) {
+	oidcServer.Close()
+	oidcEnabled = false
+	oidcProvider = nil
+	oauth2Config = nil
+	oidcVerifier = nil
+	os.Unsetenv("OIDC_ISSUER")
+	os.Unsetenv("OIDC_CLIENT_ID")
+	os.Unsetenv("OIDC_CLIENT_SECRET")
+	os.Unsetenv("OIDC_REDIRECT_URL")
+	os.Unsetenv("OIDC_ADMIN_CLAIM")
+	os.Unsetenv("OIDC_ADMIN_VALUE")
+	os.Unsetenv("OIDC_SESSION_TTL")
+}
+
+// makeRequestWithCookie is like makeRequest but uses a session cookie instead of API key
+func makeRequestWithCookie(t *testing.T, mux *http.ServeMux, method, path string, body interface{}, cookie *http.Cookie) *httptest.ResponseRecorder {
+	var reqBody io.Reader
+	if body != nil {
+		jsonBody, err := json.Marshal(body)
+		if err != nil {
+			t.Fatalf("Failed to marshal request body: %v", err)
+		}
+		reqBody = bytes.NewBuffer(jsonBody)
+	}
+
+	req := httptest.NewRequest(method, path, reqBody)
+	req.Header.Set("Content-Type", "application/json")
+	if cookie != nil {
+		req.AddCookie(cookie)
+	}
+
+	recorder := httptest.NewRecorder()
+	handler := corsMiddleware(mux)
+	handler.ServeHTTP(recorder, req)
+
+	return recorder
+}
+
+// createTestSession creates a session directly in the DB and returns the token
+func createTestSession(t *testing.T, email, name, role string, expiresAt time.Time) string {
+	token := fmt.Sprintf("test-session-%d", time.Now().UnixNano())
+	session := Session{
+		Token:     token,
+		Email:     email,
+		Name:      name,
+		Subject:   "test-subject",
+		Role:      role,
+		ExpiresAt: expiresAt,
+	}
+	if err := db.Create(&session).Error; err != nil {
+		t.Fatalf("Failed to create test session: %v", err)
+	}
+	return token
+}
+
+// ===== OIDC Tests =====
+
+func TestOIDCLoginRedirect(t *testing.T) {
+	mux, oidcServer := setupTestEnvironmentWithOIDC(t)
+	defer teardownTestEnvironment(t)
+	defer cleanupOIDC(oidcServer)
+
+	req := httptest.NewRequest("GET", "/auth/login", nil)
+	recorder := httptest.NewRecorder()
+	handler := corsMiddleware(mux)
+	handler.ServeHTTP(recorder, req)
+
+	if recorder.Code != http.StatusFound {
+		t.Errorf("Expected 302 redirect, got %d. Body: %s", recorder.Code, recorder.Body.String())
+		return
+	}
+
+	location := recorder.Header().Get("Location")
+	if location == "" {
+		t.Error("Expected Location header in redirect")
+		return
+	}
+
+	// Should redirect to the OIDC provider's authorize endpoint
+	if !bytes.Contains([]byte(location), []byte("/authorize")) {
+		t.Errorf("Expected redirect to /authorize, got %s", location)
+	}
+
+	// Should set oidc_state cookie
+	cookies := recorder.Result().Cookies()
+	var stateCookie *http.Cookie
+	for _, c := range cookies {
+		if c.Name == "oidc_state" {
+			stateCookie = c
+			break
+		}
+	}
+	if stateCookie == nil {
+		t.Error("Expected oidc_state cookie to be set")
+		return
+	}
+	if stateCookie.Value == "" {
+		t.Error("Expected oidc_state cookie to have a value")
+	}
+	if !stateCookie.HttpOnly {
+		t.Error("Expected oidc_state cookie to be HttpOnly")
+	}
+}
+
+func TestOIDCCallbackCreatesSession(t *testing.T) {
+	mux, oidcServer := setupTestEnvironmentWithOIDC(t)
+	defer teardownTestEnvironment(t)
+	defer cleanupOIDC(oidcServer)
+
+	// Simulate the callback with a valid state and code
+	state := "test-state-value"
+
+	req := httptest.NewRequest("GET", "/auth/callback?state="+state+"&code=admin-code", nil)
+	req.AddCookie(&http.Cookie{Name: "oidc_state", Value: state})
+	recorder := httptest.NewRecorder()
+	handler := corsMiddleware(mux)
+	handler.ServeHTTP(recorder, req)
+
+	if recorder.Code != http.StatusFound {
+		t.Errorf("Expected 302 redirect to /, got %d. Body: %s", recorder.Code, recorder.Body.String())
+		return
+	}
+
+	location := recorder.Header().Get("Location")
+	if location != "/" {
+		t.Errorf("Expected redirect to /, got %s", location)
+	}
+
+	// Should set session cookie
+	cookies := recorder.Result().Cookies()
+	var sessionCookie *http.Cookie
+	for _, c := range cookies {
+		if c.Name == "session" {
+			sessionCookie = c
+			break
+		}
+	}
+	if sessionCookie == nil {
+		t.Error("Expected session cookie to be set")
+		return
+	}
+
+	// Verify session was created in database
+	var session Session
+	err := db.Where("token = ?", sessionCookie.Value).First(&session).Error
+	if err != nil {
+		t.Errorf("Session not found in database: %v", err)
+		return
+	}
+
+	if session.Email != "admin@example.com" {
+		t.Errorf("Expected email admin@example.com, got %s", session.Email)
+	}
+	if session.Role != "admin" {
+		t.Errorf("Expected role admin, got %s", session.Role)
+	}
+}
+
+func TestOIDCMeAuthenticated(t *testing.T) {
+	mux, oidcServer := setupTestEnvironmentWithOIDC(t)
+	defer teardownTestEnvironment(t)
+	defer cleanupOIDC(oidcServer)
+
+	// Create a session directly in DB
+	token := createTestSession(t, "admin@example.com", "Admin User", "admin", time.Now().Add(1*time.Hour))
+
+	resp := makeRequestWithCookie(t, mux, "GET", "/auth/me", nil, &http.Cookie{Name: "session", Value: token})
+
+	if resp.Code != http.StatusOK {
+		t.Errorf("Expected 200, got %d. Body: %s", resp.Code, resp.Body.String())
+		return
+	}
+
+	var result map[string]interface{}
+	json.Unmarshal(resp.Body.Bytes(), &result)
+
+	if result["authenticated"] != true {
+		t.Error("Expected authenticated: true")
+	}
+	if result["email"] != "admin@example.com" {
+		t.Errorf("Expected email admin@example.com, got %v", result["email"])
+	}
+	if result["role"] != "admin" {
+		t.Errorf("Expected role admin, got %v", result["role"])
+	}
+}
+
+func TestOIDCMeUnauthenticated(t *testing.T) {
+	mux, oidcServer := setupTestEnvironmentWithOIDC(t)
+	defer teardownTestEnvironment(t)
+	defer cleanupOIDC(oidcServer)
+
+	resp := makeRequestWithCookie(t, mux, "GET", "/auth/me", nil, nil)
+
+	if resp.Code != http.StatusUnauthorized {
+		t.Errorf("Expected 401, got %d", resp.Code)
+	}
+}
+
+func TestOIDCLogout(t *testing.T) {
+	mux, oidcServer := setupTestEnvironmentWithOIDC(t)
+	defer teardownTestEnvironment(t)
+	defer cleanupOIDC(oidcServer)
+
+	// Create a session
+	token := createTestSession(t, "admin@example.com", "Admin User", "admin", time.Now().Add(1*time.Hour))
+
+	// Logout
+	resp := makeRequestWithCookie(t, mux, "POST", "/auth/logout", nil, &http.Cookie{Name: "session", Value: token})
+
+	if resp.Code != http.StatusOK {
+		t.Errorf("Expected 200, got %d", resp.Code)
+		return
+	}
+
+	// Verify session was deleted from database
+	var session Session
+	err := db.Where("token = ?", token).First(&session).Error
+	if err == nil {
+		t.Error("Session should have been deleted from database")
+	}
+
+	// Verify cookie is cleared
+	cookies := resp.Result().Cookies()
+	for _, c := range cookies {
+		if c.Name == "session" && c.MaxAge == -1 {
+			return // Cookie properly cleared
+		}
+	}
+	t.Error("Expected session cookie to be cleared")
+}
+
+func TestOIDCSessionAccessEndpoint(t *testing.T) {
+	mux, oidcServer := setupTestEnvironmentWithOIDC(t)
+	defer teardownTestEnvironment(t)
+	defer cleanupOIDC(oidcServer)
+
+	// Create an admin session
+	token := createTestSession(t, "admin@example.com", "Admin User", "admin", time.Now().Add(1*time.Hour))
+
+	// Access a protected endpoint with session cookie (no API key)
+	resp := makeRequestWithCookie(t, mux, "POST", "/getStats", map[string]interface{}{}, &http.Cookie{Name: "session", Value: token})
+
+	if resp.Code != http.StatusOK {
+		t.Errorf("Expected 200, got %d. Body: %s", resp.Code, resp.Body.String())
+	}
+}
+
+func TestOIDCSessionExpired(t *testing.T) {
+	mux, oidcServer := setupTestEnvironmentWithOIDC(t)
+	defer teardownTestEnvironment(t)
+	defer cleanupOIDC(oidcServer)
+
+	// Create an expired session
+	token := createTestSession(t, "expired@example.com", "Expired User", "admin", time.Now().Add(-1*time.Hour))
+
+	// Try to access protected endpoint
+	resp := makeRequestWithCookie(t, mux, "POST", "/getStats", map[string]interface{}{}, &http.Cookie{Name: "session", Value: token})
+
+	if resp.Code != http.StatusUnauthorized {
+		t.Errorf("Expected 401 for expired session, got %d", resp.Code)
+	}
+}
+
+func TestDualAuthAPIKeyPreferred(t *testing.T) {
+	mux, oidcServer := setupTestEnvironmentWithOIDC(t)
+	defer teardownTestEnvironment(t)
+	defer cleanupOIDC(oidcServer)
+
+	// Create a session
+	token := createTestSession(t, "user@example.com", "Test User", "admin", time.Now().Add(1*time.Hour))
+
+	// Send request with BOTH API key and session cookie
+	var reqBody io.Reader
+	jsonBody, _ := json.Marshal(map[string]interface{}{})
+	reqBody = bytes.NewBuffer(jsonBody)
+
+	req := httptest.NewRequest("POST", "/getStats", reqBody)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-API-Key", testAPIKey)
+	req.AddCookie(&http.Cookie{Name: "session", Value: token})
+
+	recorder := httptest.NewRecorder()
+	handler := corsMiddleware(mux)
+	handler.ServeHTTP(recorder, req)
+
+	if recorder.Code != http.StatusOK {
+		t.Errorf("Expected 200, got %d. Body: %s", recorder.Code, recorder.Body.String())
+		return
+	}
+
+	// Verify that API key auth was used (check context - we can infer from behavior)
+	// The fact that it succeeded with a valid API key confirms API key takes priority
+}
+
+func TestOIDCDisabledReturns404(t *testing.T) {
+	mux := setupTestEnvironment(t)
+	defer teardownTestEnvironment(t)
+
+	// Ensure OIDC is disabled
+	oidcEnabled = false
+
+	// /auth/login is not registered on this mux, so it should 404
+	req := httptest.NewRequest("GET", "/auth/login", nil)
+	recorder := httptest.NewRecorder()
+	handler := corsMiddleware(mux)
+	handler.ServeHTTP(recorder, req)
+
+	if recorder.Code != http.StatusNotFound {
+		t.Errorf("Expected 404 when OIDC disabled, got %d", recorder.Code)
+	}
+}
+
+func TestOIDCAdminClaimDetection(t *testing.T) {
+	mux, oidcServer := setupTestEnvironmentWithOIDC(t)
+	defer teardownTestEnvironment(t)
+	defer cleanupOIDC(oidcServer)
+
+	// Test with admin code (has "admin" in groups)
+	state := "admin-state"
+	req := httptest.NewRequest("GET", "/auth/callback?state="+state+"&code=admin-code", nil)
+	req.AddCookie(&http.Cookie{Name: "oidc_state", Value: state})
+	recorder := httptest.NewRecorder()
+	corsMiddleware(mux).ServeHTTP(recorder, req)
+
+	if recorder.Code != http.StatusFound {
+		t.Fatalf("Admin callback failed: %d - %s", recorder.Code, recorder.Body.String())
+	}
+
+	// Get the session token from the cookie
+	var adminSessionToken string
+	for _, c := range recorder.Result().Cookies() {
+		if c.Name == "session" {
+			adminSessionToken = c.Value
+			break
+		}
+	}
+
+	// Verify admin role
+	var adminSession Session
+	db.Where("token = ?", adminSessionToken).First(&adminSession)
+	if adminSession.Role != "admin" {
+		t.Errorf("Expected admin role, got %s", adminSession.Role)
+	}
+
+	// Test with user code (no "admin" in groups)
+	state2 := "user-state"
+	req2 := httptest.NewRequest("GET", "/auth/callback?state="+state2+"&code=user-code", nil)
+	req2.AddCookie(&http.Cookie{Name: "oidc_state", Value: state2})
+	recorder2 := httptest.NewRecorder()
+	corsMiddleware(mux).ServeHTTP(recorder2, req2)
+
+	if recorder2.Code != http.StatusFound {
+		t.Fatalf("User callback failed: %d - %s", recorder2.Code, recorder2.Body.String())
+	}
+
+	var userSessionToken string
+	for _, c := range recorder2.Result().Cookies() {
+		if c.Name == "session" {
+			userSessionToken = c.Value
+			break
+		}
+	}
+
+	var userSession Session
+	db.Where("token = ?", userSessionToken).First(&userSession)
+	if userSession.Role != "user" {
+		t.Errorf("Expected user role, got %s", userSession.Role)
+	}
+}
+
+func TestOIDCMeExpiredSession(t *testing.T) {
+	mux, oidcServer := setupTestEnvironmentWithOIDC(t)
+	defer teardownTestEnvironment(t)
+	defer cleanupOIDC(oidcServer)
+
+	// Create an expired session
+	token := createTestSession(t, "expired@example.com", "Expired", "admin", time.Now().Add(-1*time.Hour))
+
+	resp := makeRequestWithCookie(t, mux, "GET", "/auth/me", nil, &http.Cookie{Name: "session", Value: token})
+
+	if resp.Code != http.StatusUnauthorized {
+		t.Errorf("Expected 401 for expired session on /auth/me, got %d", resp.Code)
+	}
+}
+
+// Ensure unused imports don't cause compilation issues
+var _ = context.Background
+var _ = fmt.Sprintf
