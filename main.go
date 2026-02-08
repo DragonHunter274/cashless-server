@@ -17,7 +17,6 @@ import (
 	"time"
 
 	oidc "github.com/coreos/go-oidc/v3/oidc"
-	embeddedpostgres "github.com/fergusstrange/embedded-postgres"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/prometheus/prometheus/prompb"
@@ -435,48 +434,6 @@ func initOIDC() error {
 	return nil
 }
 
-func setupTestMode() (*embeddedpostgres.EmbeddedPostgres, string, error) {
-	log.Println("Starting in TEST MODE with embedded PostgreSQL...")
-
-	// Start embedded PostgreSQL on port 5434 to avoid conflicts
-	embeddedPG := embeddedpostgres.NewDatabase(embeddedpostgres.DefaultConfig().
-		Port(5434).
-		Database("cashless_test").
-		Username("postgres").
-		Password("postgres"))
-
-	if err := embeddedPG.Start(); err != nil {
-		return nil, "", fmt.Errorf("failed to start embedded PostgreSQL: %v", err)
-	}
-
-	// Set environment variables for database connection
-	os.Setenv("PG_USER", "postgres")
-	os.Setenv("PG_PASSWORD", "postgres")
-	os.Setenv("PG_DBNAME", "cashless_test")
-	os.Setenv("PG_HOST", "localhost port=5434")
-
-	// Wait for PostgreSQL to be ready
-	time.Sleep(2 * time.Second)
-
-	// Initialize database
-	if err := initDB(); err != nil {
-		embeddedPG.Stop()
-		return nil, "", fmt.Errorf("failed to initialize database: %v", err)
-	}
-
-	// Generate and create API key
-	apiKey := generateAPIKey()
-	key := APIKey{
-		Key:              apiKey,
-		AllowedEndpoints: "/makePurchase,/confirmPurchase,/makeCashPurchase,/getBalance,/getTransactions,/getVouchers,/getPrivileges,/topUp,/createUser,/createVoucher,/createPrivilege,/getStats,/getUsers,/getAPIKeys,/createAPIKey,/deleteAPIKey,/getProductMap,/createProductMapping,/deleteProductMapping,/deleteVoucher,/deletePrivilege",
-	}
-	if err := db.Create(&key).Error; err != nil {
-		embeddedPG.Stop()
-		return nil, "", fmt.Errorf("failed to create API key: %v", err)
-	}
-
-	return embeddedPG, apiKey, nil
-}
 
 func authMiddleware(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
@@ -1698,27 +1655,31 @@ func sortInt64Slice(slice []int64) {
 
 func main() {
 	// Parse command-line flags
-	testMode := flag.Bool("test", false, "Run in test mode with embedded PostgreSQL")
+	testMode := flag.Bool("test", false, "Run in test mode with embedded PostgreSQL and fake OIDC")
 	flag.Parse()
 
-	var embeddedPG *embeddedpostgres.EmbeddedPostgres
+	var testResources *TestModeResources
 	var apiKey string
 
 	if *testMode {
 		var err error
-		embeddedPG, apiKey, err = setupTestMode()
+		testResources, apiKey, err = setupTestMode()
 		if err != nil {
 			log.Fatal(err)
 		}
 
 		// Display API key prominently
 		log.Println("================================================================================")
-		log.Println("TEST MODE ACTIVE - Embedded PostgreSQL running on port 5434")
+		log.Println("TEST MODE ACTIVE")
+		log.Println("================================================================================")
+		log.Println("Embedded PostgreSQL running on port 5434")
+		log.Println("Fake OIDC server running on port " + testResources.oidcPort)
 		log.Println("================================================================================")
 		log.Println("API Key for Web UI:")
 		log.Println(apiKey)
 		log.Println("================================================================================")
 		log.Println("Copy the API key above and paste it into the web UI at http://localhost:8080")
+		log.Println("Or click 'Login with SSO' and use username 'admin' or 'user' for testing OIDC")
 		log.Println("================================================================================")
 	} else {
 		if err := initDB(); err != nil {
@@ -1811,14 +1772,9 @@ func main() {
 		log.Printf("Server shutdown error: %v", err)
 	}
 
-	// Stop embedded PostgreSQL if running in test mode
-	if embeddedPG != nil {
-		log.Println("Stopping embedded PostgreSQL...")
-		if err := embeddedPG.Stop(); err != nil {
-			log.Printf("Error stopping embedded PostgreSQL: %v", err)
-		} else {
-			log.Println("Embedded PostgreSQL stopped successfully")
-		}
+	// Stop test mode resources if running in test mode
+	if testResources != nil {
+		testResources.Cleanup()
 	}
 
 	log.Println("Server stopped")

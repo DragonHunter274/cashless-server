@@ -457,3 +457,153 @@ function copyKey() {
 async function deleteAPIKey(maskedKey) {
     toast('Cannot delete API keys by masked key. Use the full key.', 'error');
 }
+
+// ===== USER VIEW PAGES =====
+
+// Get current user's UID (use username from auth state)
+function getUserUID() {
+    return window.authState ? window.authState.username : null;
+}
+
+// User Overview Page
+async function loadUserOverview() {
+    const uid = getUserUID();
+    if (!uid) return;
+
+    try {
+        const [balance, txs, vouchers, privileges] = await Promise.all([
+            api('/getBalance', { uid }),
+            api('/getTransactions', { uid, limit: 10 }),
+            api('/getVouchers', { uid }),
+            api('/getPrivileges', { uid })
+        ]);
+
+        const bal = balance.balance;
+        const transactions = txs || [];
+        const voucherList = vouchers || [];
+        const privList = privileges || [];
+
+        // Display balance
+        const balClass = bal >= 0 ? 'amount-positive' : 'amount-negative';
+        document.getElementById('userBalance').innerHTML = `<span class="${balClass}">${fmt(bal)}</span>`;
+
+        // Display summary
+        const activeVouchers = voucherList.filter(v => !v.used).length;
+        const freeVendPrivs = privList.filter(p => p.free_vend).length;
+
+        document.getElementById('userSummary').innerHTML = `
+            <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 16px; margin-top: 12px;">
+                <div>
+                    <div style="font-size: 11px; color: var(--text-muted); text-transform: uppercase; margin-bottom: 4px;">Active Vouchers</div>
+                    <div style="font-size: 20px; font-weight: 600;">${activeVouchers}</div>
+                </div>
+                <div>
+                    <div style="font-size: 11px; color: var(--text-muted); text-transform: uppercase; margin-bottom: 4px;">Free Vend Machines</div>
+                    <div style="font-size: 20px; font-weight: 600;">${freeVendPrivs}</div>
+                </div>
+                <div>
+                    <div style="font-size: 11px; color: var(--text-muted); text-transform: uppercase; margin-bottom: 4px;">Recent Transactions</div>
+                    <div style="font-size: 20px; font-weight: 600;">${transactions.length}</div>
+                </div>
+            </div>
+
+            <div style="margin-top: 24px;">
+                <h4 style="font-size: 14px; font-weight: 600; margin-bottom: 12px;">Recent Activity</h4>
+                ${transactions.length === 0 ? '<p style="color: var(--text-muted); font-size: 13px;">No recent transactions</p>' :
+                `<table style="font-size: 12px;">
+                    <thead><tr><th>Date</th><th>Amount</th><th>Product</th><th>Status</th></tr></thead>
+                    <tbody>${transactions.map(tx => `<tr>
+                        <td>${fmtDate(tx.created_at)}</td>
+                        <td>${amountHtml(tx.amount)}</td>
+                        <td>${esc(tx.product)}</td>
+                        <td>${badge(tx.status)}</td>
+                    </tr>`).join('')}</tbody>
+                </table>`}
+            </div>
+        `;
+    } catch (e) {
+        document.getElementById('userBalance').innerHTML = '<span style="color: var(--danger);">Error loading data</span>';
+        document.getElementById('userSummary').innerHTML = `<p style="color: var(--danger);">${esc(e.message)}</p>`;
+    }
+}
+
+// User Transactions Page
+async function loadUserTransactions() {
+    const uid = getUserUID();
+    if (!uid) return;
+
+    try {
+        const txs = await api('/getTransactions', { uid, limit: 100 }) || [];
+
+        if (txs.length === 0) {
+            document.getElementById('userTransactionsTable').innerHTML = '<div class="empty-state"><p>No transactions found</p></div>';
+            return;
+        }
+
+        document.getElementById('userTransactionsTable').innerHTML = `<table>
+            <thead><tr><th>Date</th><th>Amount</th><th>Product</th><th>Machine</th><th>Method</th><th>Status</th></tr></thead>
+            <tbody>${txs.map(tx => `<tr>
+                <td>${fmtDate(tx.created_at)}</td>
+                <td>${amountHtml(tx.amount)}</td>
+                <td>${esc(tx.product)}</td>
+                <td>${esc(tx.machine_id)}</td>
+                <td>${esc(tx.payment_method)}</td>
+                <td>${badge(tx.status)}</td>
+            </tr>`).join('')}</tbody>
+        </table>`;
+    } catch (e) {
+        document.getElementById('userTransactionsTable').innerHTML = `<div class="empty-state"><p style="color: var(--danger);">Error: ${esc(e.message)}</p></div>`;
+    }
+}
+
+// User Vouchers Page
+async function loadUserVouchers() {
+    const uid = getUserUID();
+    if (!uid) return;
+
+    try {
+        const vouchers = await api('/getVouchers', { uid }) || [];
+
+        if (vouchers.length === 0) {
+            document.getElementById('userVouchersTable').innerHTML = '<div class="empty-state"><p>No vouchers found</p></div>';
+            return;
+        }
+
+        document.getElementById('userVouchersTable').innerHTML = `<table>
+            <thead><tr><th>ID</th><th>Machine</th><th>Status</th><th>Created</th></tr></thead>
+            <tbody>${vouchers.map(v => `<tr>
+                <td>${v.id}</td>
+                <td>${esc(v.machine_id)}</td>
+                <td>${v.used ? badge('used') : badge('available')}</td>
+                <td>${fmtDate(v.created_at)}</td>
+            </tr>`).join('')}</tbody>
+        </table>`;
+    } catch (e) {
+        document.getElementById('userVouchersTable').innerHTML = `<div class="empty-state"><p style="color: var(--danger);">Error: ${esc(e.message)}</p></div>`;
+    }
+}
+
+// User Privileges Page
+async function loadUserPrivileges() {
+    const uid = getUserUID();
+    if (!uid) return;
+
+    try {
+        const privs = await api('/getPrivileges', { uid }) || [];
+
+        if (privs.length === 0) {
+            document.getElementById('userPrivilegesTable').innerHTML = '<div class="empty-state"><p>No privileges found</p></div>';
+            return;
+        }
+
+        document.getElementById('userPrivilegesTable').innerHTML = `<table>
+            <thead><tr><th>Machine</th><th>Free Vend</th></tr></thead>
+            <tbody>${privs.map(p => `<tr>
+                <td>${esc(p.machine_id)}</td>
+                <td>${p.free_vend ? badge('yes') : badge('no')}</td>
+            </tr>`).join('')}</tbody>
+        </table>`;
+    } catch (e) {
+        document.getElementById('userPrivilegesTable').innerHTML = `<div class="empty-state"><p style="color: var(--danger);">Error: ${esc(e.message)}</p></div>`;
+    }
+}

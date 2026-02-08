@@ -7,67 +7,164 @@
     <link rel="stylesheet" href="/css/styles.css">
 </head>
 <body>
-    <aside class="sidebar" id="sidebar">
-        <div class="sidebar-header">
-            <h1>Cashless Server</h1>
-            <div class="subtitle">Admin Panel</div>
-        </div>
-        <nav>
-            <div class="nav-section">Overview</div>
-            <a class="nav-item active" onclick="navigate('dashboard')">
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>
-                Dashboard
-            </a>
-
-            <div class="nav-section">Management</div>
-            <a class="nav-item" onclick="navigate('users')">
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
-                Users
-            </a>
-            <a class="nav-item" onclick="navigate('purchases')">
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="9" cy="21" r="1"/><circle cx="20" cy="21" r="1"/><path d="M1 1h4l2.68 13.39a2 2 0 0 0 2 1.61h9.72a2 2 0 0 0 2-1.61L23 6H6"/></svg>
-                Purchases
-            </a>
-            <a class="nav-item" onclick="navigate('vouchers')">
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 12v6a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2v-6"/><polyline points="12 3 12 15"/><polyline points="8 7 12 3 16 7"/></svg>
-                Vouchers
-            </a>
-            <a class="nav-item" onclick="navigate('privileges')">
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
-                Privileges
-            </a>
-            <a class="nav-item" onclick="navigate('transactions')">
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="1" x2="12" y2="23"/><path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg>
-                Transactions
-            </a>
-
-            <div class="nav-section">Settings</div>
-            <a class="nav-item" onclick="navigate('products')">
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/></svg>
-                Products
-            </a>
-            <a class="nav-item" onclick="navigate('apikeys')">
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 5.5 5.5 0 0 1 7.777-7.777zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4"/></svg>
-                API Keys
-            </a>
-        </nav>
-    </aside>
-
-    <div class="main">
-        <div class="topbar">
-            <button class="hamburger" onclick="toggleSidebar()">
-                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
-            </button>
-            <label for="apiKeyInput">API Key:</label>
-            <input type="password" id="apiKeyInput" placeholder="Enter your API key to get started">
-            <div id="oidcAuth" style="margin-left: auto; display: flex; align-items: center; gap: 12px;">
-                <button id="ssoLoginBtn" class="btn btn-primary" onclick="window.location.href='/auth/login'" style="display: none;">Login with SSO</button>
-                <div id="userInfo" style="display: none; align-items: center; gap: 12px;">
-                    <span id="userName" style="font-size: 13px; color: var(--text-muted);"></span>
-                    <button class="btn btn-secondary" onclick="logoutOIDC()" style="padding: 6px 12px; font-size: 12px;">Logout</button>
+    <!-- Login Page -->
+    <div id="loginView" class="login-view">
+        <div class="login-container">
+            <div class="login-header">
+                <h1>Cashless Server</h1>
+                <p>Please log in to continue</p>
+            </div>
+            <div class="login-methods">
+                <button id="ssoLoginBtnPage" class="btn btn-primary btn-large" onclick="window.location.href='/auth/login'" style="display: none;">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width: 20px; height: 20px;"><path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4m-5-4l5-5-5-5m5 5H3"/></svg>
+                    Login with SSO
+                </button>
+                <div class="login-divider">or</div>
+                <div class="api-key-login">
+                    <input type="password" id="apiKeyLoginInput" placeholder="Enter API Key">
+                    <button class="btn btn-primary" onclick="loginWithAPIKey()">Login with API Key</button>
                 </div>
             </div>
         </div>
+    </div>
+
+    <!-- User View -->
+    <div id="userView" class="user-view" style="display: none;">
+        <aside class="sidebar" id="userSidebar">
+            <div class="sidebar-header">
+                <h1>Cashless Server</h1>
+                <div class="subtitle">My Account</div>
+            </div>
+            <nav>
+                <a class="nav-item active" onclick="navigateUser('overview')">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
+                    My Overview
+                </a>
+                <a class="nav-item" onclick="navigateUser('transactions')">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="1" x2="12" y2="23"/><path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg>
+                    My Transactions
+                </a>
+                <a class="nav-item" onclick="navigateUser('vouchers')">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 12v6a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2v-6"/><polyline points="12 3 12 15"/><polyline points="8 7 12 3 16 7"/></svg>
+                    My Vouchers
+                </a>
+                <a class="nav-item" onclick="navigateUser('privileges')">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+                    My Privileges
+                </a>
+            </nav>
+        </aside>
+
+        <div class="main">
+            <div class="topbar">
+                <button class="hamburger" onclick="toggleSidebar('userSidebar')">
+                    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
+                </button>
+                <div style="margin-left: auto; display: flex; align-items: center; gap: 12px;">
+                    <span id="userViewName" style="font-size: 13px; color: var(--text-muted);"></span>
+                    <button class="btn btn-secondary" onclick="logout()" style="padding: 6px 12px; font-size: 12px;">Logout</button>
+                </div>
+            </div>
+
+            <div class="content">
+                <!-- User Overview -->
+                <div class="page active" id="user-page-overview">
+                    <div class="page-title">My Overview</div>
+                    <div class="card">
+                        <div class="card-title">Balance</div>
+                        <div id="userBalance" style="font-size: 32px; font-weight: 700; margin: 20px 0;"></div>
+                    </div>
+                    <div class="card">
+                        <div class="card-title">Account Summary</div>
+                        <div id="userSummary"></div>
+                    </div>
+                </div>
+
+                <!-- User Transactions -->
+                <div class="page" id="user-page-transactions">
+                    <div class="page-title">My Transactions</div>
+                    <div class="card">
+                        <div class="table-wrap" id="userTransactionsTable"></div>
+                    </div>
+                </div>
+
+                <!-- User Vouchers -->
+                <div class="page" id="user-page-vouchers">
+                    <div class="page-title">My Vouchers</div>
+                    <div class="card">
+                        <div class="table-wrap" id="userVouchersTable"></div>
+                    </div>
+                </div>
+
+                <!-- User Privileges -->
+                <div class="page" id="user-page-privileges">
+                    <div class="page-title">My Privileges</div>
+                    <div class="card">
+                        <div class="table-wrap" id="userPrivilegesTable"></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Admin View -->
+    <div id="adminView" class="admin-view" style="display: none;">
+        <aside class="sidebar" id="sidebar">
+            <div class="sidebar-header">
+                <h1>Cashless Server</h1>
+                <div class="subtitle">Admin Panel</div>
+            </div>
+            <nav>
+                <div class="nav-section">Overview</div>
+                <a class="nav-item active" onclick="navigate('dashboard')">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>
+                    Dashboard
+                </a>
+
+                <div class="nav-section">Management</div>
+                <a class="nav-item" onclick="navigate('users')">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
+                    Users
+                </a>
+                <a class="nav-item" onclick="navigate('purchases')">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="9" cy="21" r="1"/><circle cx="20" cy="21" r="1"/><path d="M1 1h4l2.68 13.39a2 2 0 0 0 2 1.61h9.72a2 2 0 0 0 2-1.61L23 6H6"/></svg>
+                    Purchases
+                </a>
+                <a class="nav-item" onclick="navigate('vouchers')">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 12v6a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2v-6"/><polyline points="12 3 12 15"/><polyline points="8 7 12 3 16 7"/></svg>
+                    Vouchers
+                </a>
+                <a class="nav-item" onclick="navigate('privileges')">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+                    Privileges
+                </a>
+                <a class="nav-item" onclick="navigate('transactions')">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="1" x2="12" y2="23"/><path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg>
+                    Transactions
+                </a>
+
+                <div class="nav-section">Settings</div>
+                <a class="nav-item" onclick="navigate('products')">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/></svg>
+                    Products
+                </a>
+                <a class="nav-item" onclick="navigate('apikeys')">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 5.5 5.5 0 0 1 7.777-7.777zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4"/></svg>
+                    API Keys
+                </a>
+            </nav>
+        </aside>
+
+        <div class="main">
+            <div class="topbar">
+                <button class="hamburger" onclick="toggleSidebar('sidebar')">
+                    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
+                </button>
+                <div style="margin-left: auto; display: flex; align-items: center; gap: 12px;">
+                    <span id="adminUserName" style="font-size: 13px; color: var(--text-muted);"></span>
+                    <button class="btn btn-secondary" onclick="logout()" style="padding: 6px 12px; font-size: 12px;">Logout</button>
+                </div>
+            </div>
 
         <div class="content">
             <!-- Dashboard -->
@@ -222,6 +319,7 @@
                     </div>
                     <div class="table-wrap" id="apiKeysTable"></div>
                 </div>
+            </div>
             </div>
         </div>
     </div>
