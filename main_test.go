@@ -15,9 +15,13 @@ import (
 	"testing"
 	"time"
 
+	"github.com/gogo/protobuf/proto"
+	"github.com/golang/snappy"
+
 	embeddedpostgres "github.com/fergusstrange/embedded-postgres"
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
+	"github.com/prometheus/prometheus/prompb"
 )
 
 var (
@@ -67,13 +71,13 @@ func setupTestEnvironment(t *testing.T) *http.ServeMux {
 	db.Exec("DELETE FROM vend_vouchers")
 	db.Exec("DELETE FROM user_machine_privileges")
 	db.Exec("DELETE FROM api_keys")
-	db.Exec("DELETE FROM product_maps")
+	db.Exec("DELETE FROM product_map")
 	db.Exec("DELETE FROM sessions")
 
 	// Create test API key with all permissions
 	apiKey := APIKey{
 		Key:              testAPIKey,
-		AllowedEndpoints: "/makePurchase,/confirmPurchase,/makeCashPurchase,/getBalance,/getTransactions,/getVouchers,/getPrivileges,/topUp,/createUser,/createVoucher,/createPrivilege,/getStats,/getUsers,/getAPIKeys,/createAPIKey,/deleteAPIKey,/getProductMap,/createProductMapping,/deleteProductMapping,/deleteVoucher,/deletePrivilege",
+		AllowedEndpoints: "/makePurchase,/confirmPurchase,/makeCashPurchase,/getBalance,/getTransactions,/getVouchers,/getPrivileges,/topUp,/createUser,/createVoucher,/createPrivilege,/getStats,/getUsers,/getAPIKeys,/createAPIKey,/deleteAPIKey,/getProductMap,/createProductMapping,/deleteProductMapping,/deleteVoucher,/deletePrivilege,/editTransaction,/deleteTransaction",
 	}
 	db.Create(&apiKey)
 
@@ -100,7 +104,10 @@ func setupTestEnvironment(t *testing.T) *http.ServeMux {
 	mux.HandleFunc("/deleteProductMapping", authMiddleware(deleteProductMappingHandler))
 	mux.HandleFunc("/deleteVoucher", authMiddleware(deleteVoucherHandler))
 	mux.HandleFunc("/deletePrivilege", authMiddleware(deletePrivilegeHandler))
+	mux.HandleFunc("/editTransaction", authMiddleware(editTransactionHandler))
+	mux.HandleFunc("/deleteTransaction", authMiddleware(deleteTransactionHandler))
 	mux.Handle("/metrics", promhttp.Handler())
+	mux.HandleFunc("/api/v1/read", remoteReadHandler)
 
 	return mux
 }
@@ -1817,6 +1824,467 @@ func TestOIDCMeExpiredSession(t *testing.T) {
 
 	if resp.Code != http.StatusUnauthorized {
 		t.Errorf("Expected 401 for expired session on /auth/me, got %d", resp.Code)
+	}
+}
+
+func TestEditTransaction(t *testing.T) {
+	mux := setupTestEnvironment(t)
+	defer teardownTestEnvironment(t)
+
+	uid := "test-edit-tx-user"
+	ensureUser(uid)
+
+	// Top up so we can make a purchase
+	makeRequest(t, mux, "POST", "/topUp", map[string]interface{}{"uid": uid, "amount": 5000}, true)
+
+	// Make a purchase to get a transaction
+	purchaseResp := makeRequest(t, mux, "POST", "/makePurchase", map[string]interface{}{
+		"uid": uid, "machine_id": "VM1", "product": 1, "amount": 100,
+	}, true)
+	var pr map[string]interface{}
+	json.Unmarshal(purchaseResp.Body.Bytes(), &pr)
+	txID := uint(pr["transaction_id"].(float64))
+
+	// Confirm it first
+	makeRequest(t, mux, "POST", "/confirmPurchase", map[string]interface{}{"transaction_id": txID}, true)
+
+	// Edit the transaction
+	newUID := "edited-user"
+	editReq := map[string]interface{}{
+		"id":             txID,
+		"uid":            newUID,
+		"amount":         -999,
+		"product":        "Edited Product",
+		"status":         "failed",
+		"payment_method": "cash",
+		"machine_id":     "VM99",
+	}
+	resp := makeRequest(t, mux, "POST", "/editTransaction", editReq, true)
+	if resp.Code != http.StatusOK {
+		t.Errorf("Expected 200, got %d. Body: %s", resp.Code, resp.Body.String())
+		return
+	}
+
+	// Verify changes in database
+	var tx TransactionModel
+	db.First(&tx, txID)
+	if tx.UID == nil || *tx.UID != newUID {
+		t.Errorf("Expected UID %q, got %v", newUID, tx.UID)
+	}
+	if tx.Amount != -999 {
+		t.Errorf("Expected amount -999, got %d", tx.Amount)
+	}
+	if tx.Status != "failed" {
+		t.Errorf("Expected status 'failed', got %s", tx.Status)
+	}
+	if tx.MachineID != "VM99" {
+		t.Errorf("Expected machine_id 'VM99', got %s", tx.MachineID)
+	}
+	if tx.PaymentMethod != "cash" {
+		t.Errorf("Expected payment_method 'cash', got %s", tx.PaymentMethod)
+	}
+}
+
+func TestEditTransactionInvalidStatus(t *testing.T) {
+	mux := setupTestEnvironment(t)
+	defer teardownTestEnvironment(t)
+
+	resp := makeRequest(t, mux, "POST", "/editTransaction", map[string]interface{}{
+		"id":     1,
+		"status": "invalid_status",
+	}, true)
+	if resp.Code != http.StatusBadRequest {
+		t.Errorf("Expected 400 for invalid status, got %d", resp.Code)
+	}
+}
+
+func TestEditTransactionNotFound(t *testing.T) {
+	mux := setupTestEnvironment(t)
+	defer teardownTestEnvironment(t)
+
+	resp := makeRequest(t, mux, "POST", "/editTransaction", map[string]interface{}{
+		"id":     99999,
+		"status": "confirmed",
+	}, true)
+	if resp.Code != http.StatusNotFound {
+		t.Errorf("Expected 404 for nonexistent transaction, got %d", resp.Code)
+	}
+}
+
+func TestDeleteTransaction(t *testing.T) {
+	mux := setupTestEnvironment(t)
+	defer teardownTestEnvironment(t)
+
+	// Create a cash purchase (auto-confirmed, no UID needed)
+	cashResp := makeRequest(t, mux, "POST", "/makeCashPurchase", map[string]interface{}{
+		"amount": 100, "product": 1, "machine_id": "VM1",
+	}, true)
+	var cr map[string]interface{}
+	json.Unmarshal(cashResp.Body.Bytes(), &cr)
+	txID := uint(cr["transaction_id"].(float64))
+
+	// Delete it
+	resp := makeRequest(t, mux, "POST", "/deleteTransaction", map[string]interface{}{"id": txID}, true)
+	if resp.Code != http.StatusOK {
+		t.Errorf("Expected 200, got %d. Body: %s", resp.Code, resp.Body.String())
+		return
+	}
+
+	// Verify it's gone
+	var tx TransactionModel
+	err := db.First(&tx, txID).Error
+	if err == nil {
+		t.Error("Expected transaction to be deleted, but it still exists")
+	}
+}
+
+func TestDeleteTransactionNotFound(t *testing.T) {
+	mux := setupTestEnvironment(t)
+	defer teardownTestEnvironment(t)
+
+	resp := makeRequest(t, mux, "POST", "/deleteTransaction", map[string]interface{}{"id": 99999}, true)
+	if resp.Code != http.StatusNotFound {
+		t.Errorf("Expected 404, got %d", resp.Code)
+	}
+}
+
+func strPtr(s string) *string { return &s }
+
+// Helper to create a snappy-compressed protobuf remote read request
+func encodeRemoteReadRequest(t *testing.T, req *prompb.ReadRequest) []byte {
+	data, err := proto.Marshal(req)
+	if err != nil {
+		t.Fatalf("Failed to marshal ReadRequest: %v", err)
+	}
+	return snappy.Encode(nil, data)
+}
+
+// Helper to decode a snappy-compressed protobuf remote read response
+func decodeRemoteReadResponse(t *testing.T, body []byte) *prompb.ReadResponse {
+	uncompressed, err := snappy.Decode(nil, body)
+	if err != nil {
+		t.Fatalf("Failed to snappy-decode response: %v", err)
+	}
+	resp := &prompb.ReadResponse{}
+	if err := proto.Unmarshal(uncompressed, resp); err != nil {
+		t.Fatalf("Failed to unmarshal ReadResponse: %v", err)
+	}
+	return resp
+}
+
+func TestRemoteReadEmptyDatabase(t *testing.T) {
+	mux := setupTestEnvironment(t)
+	defer teardownTestEnvironment(t)
+
+	now := time.Now()
+	req := &prompb.ReadRequest{
+		Queries: []*prompb.Query{
+			{
+				StartTimestampMs: now.Add(-1 * time.Hour).UnixMilli(),
+				EndTimestampMs:   now.UnixMilli(),
+				Matchers: []*prompb.LabelMatcher{
+					{Type: prompb.LabelMatcher_EQ, Name: "__name__", Value: "purchases_historical_total"},
+				},
+			},
+		},
+	}
+
+	encoded := encodeRemoteReadRequest(t, req)
+	httpReq := httptest.NewRequest("POST", "/api/v1/read", bytes.NewReader(encoded))
+	httpReq.Header.Set("Content-Type", "application/x-protobuf")
+	httpReq.Header.Set("Content-Encoding", "snappy")
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, httpReq)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("Expected 200, got %d. Body: %s", w.Code, w.Body.String())
+	}
+
+	resp := decodeRemoteReadResponse(t, w.Body.Bytes())
+	if len(resp.Results) != 1 {
+		t.Fatalf("Expected 1 result, got %d", len(resp.Results))
+	}
+	if len(resp.Results[0].Timeseries) != 0 {
+		t.Errorf("Expected 0 time series for empty DB, got %d", len(resp.Results[0].Timeseries))
+	}
+}
+
+func TestRemoteReadWithTransactions(t *testing.T) {
+	mux := setupTestEnvironment(t)
+	defer teardownTestEnvironment(t)
+
+	// Create a user and some confirmed purchase transactions
+	db.Create(&User{UID: "remote-read-user"})
+	now := time.Now()
+	transactions := []TransactionModel{
+		{UID: strPtr("remote-read-user"), Amount: -100, Product: "1", MachineID: "VM1", PaymentMethod: "digital", IsCash: false, Status: "confirmed", CreatedAt: now.Add(-30 * time.Minute)},
+		{UID: strPtr("remote-read-user"), Amount: -200, Product: "1", MachineID: "VM1", PaymentMethod: "digital", IsCash: false, Status: "confirmed", CreatedAt: now.Add(-20 * time.Minute)},
+		{UID: strPtr("remote-read-user"), Amount: -150, Product: "2", MachineID: "VM2", PaymentMethod: "digital", IsCash: false, Status: "confirmed", CreatedAt: now.Add(-10 * time.Minute)},
+	}
+	for _, tx := range transactions {
+		db.Create(&tx)
+	}
+
+	req := &prompb.ReadRequest{
+		Queries: []*prompb.Query{
+			{
+				StartTimestampMs: now.Add(-1 * time.Hour).UnixMilli(),
+				EndTimestampMs:   now.UnixMilli(),
+				Matchers: []*prompb.LabelMatcher{
+					{Type: prompb.LabelMatcher_EQ, Name: "__name__", Value: "purchases_historical_total"},
+				},
+			},
+		},
+	}
+
+	encoded := encodeRemoteReadRequest(t, req)
+	httpReq := httptest.NewRequest("POST", "/api/v1/read", bytes.NewReader(encoded))
+	httpReq.Header.Set("Content-Type", "application/x-protobuf")
+	httpReq.Header.Set("Content-Encoding", "snappy")
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, httpReq)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("Expected 200, got %d. Body: %s", w.Code, w.Body.String())
+	}
+
+	resp := decodeRemoteReadResponse(t, w.Body.Bytes())
+	if len(resp.Results) != 1 {
+		t.Fatalf("Expected 1 result, got %d", len(resp.Results))
+	}
+
+	// Should have 2 time series: product=1/VM1/digital and product=2/VM2/digital
+	if len(resp.Results[0].Timeseries) != 2 {
+		t.Fatalf("Expected 2 time series, got %d", len(resp.Results[0].Timeseries))
+	}
+
+	// Verify each time series has samples with cumulative counts
+	for _, ts := range resp.Results[0].Timeseries {
+		if len(ts.Samples) == 0 {
+			t.Error("Expected at least one sample in time series")
+		}
+		// Check labels include __name__
+		hasName := false
+		for _, label := range ts.Labels {
+			if label.Name == "__name__" && label.Value == "purchases_historical_total" {
+				hasName = true
+			}
+		}
+		if !hasName {
+			t.Error("Time series missing __name__ label")
+		}
+	}
+}
+
+func TestRemoteReadWithLabelFilter(t *testing.T) {
+	mux := setupTestEnvironment(t)
+	defer teardownTestEnvironment(t)
+
+	// Create transactions for different products/machines
+	db.Create(&User{UID: "filter-user"})
+	now := time.Now()
+	transactions := []TransactionModel{
+		{UID: strPtr("filter-user"), Amount: -100, Product: "cola", MachineID: "VM1", PaymentMethod: "digital", IsCash: false, Status: "confirmed", CreatedAt: now.Add(-30 * time.Minute)},
+		{UID: strPtr("filter-user"), Amount: -100, Product: "water", MachineID: "VM2", PaymentMethod: "digital", IsCash: false, Status: "confirmed", CreatedAt: now.Add(-20 * time.Minute)},
+	}
+	for _, tx := range transactions {
+		db.Create(&tx)
+	}
+
+	// Query with product filter - should only return "cola"
+	req := &prompb.ReadRequest{
+		Queries: []*prompb.Query{
+			{
+				StartTimestampMs: now.Add(-1 * time.Hour).UnixMilli(),
+				EndTimestampMs:   now.UnixMilli(),
+				Matchers: []*prompb.LabelMatcher{
+					{Type: prompb.LabelMatcher_EQ, Name: "__name__", Value: "purchases_historical_total"},
+					{Type: prompb.LabelMatcher_EQ, Name: "product", Value: "cola"},
+				},
+			},
+		},
+	}
+
+	encoded := encodeRemoteReadRequest(t, req)
+	httpReq := httptest.NewRequest("POST", "/api/v1/read", bytes.NewReader(encoded))
+	httpReq.Header.Set("Content-Type", "application/x-protobuf")
+	httpReq.Header.Set("Content-Encoding", "snappy")
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, httpReq)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("Expected 200, got %d", w.Code)
+	}
+
+	resp := decodeRemoteReadResponse(t, w.Body.Bytes())
+	if len(resp.Results[0].Timeseries) != 1 {
+		t.Fatalf("Expected 1 time series with product filter, got %d", len(resp.Results[0].Timeseries))
+	}
+
+	// Verify the returned series is for "cola"
+	for _, label := range resp.Results[0].Timeseries[0].Labels {
+		if label.Name == "product" && label.Value != "cola" {
+			t.Errorf("Expected product=cola, got product=%s", label.Value)
+		}
+	}
+}
+
+func TestRemoteReadWrongMetricName(t *testing.T) {
+	mux := setupTestEnvironment(t)
+	defer teardownTestEnvironment(t)
+
+	// Create a transaction so there's data available
+	db.Create(&User{UID: "wrong-metric-user"})
+	now := time.Now()
+	db.Create(&TransactionModel{
+		UID: strPtr("wrong-metric-user"), Amount: -100, Product: "1", MachineID: "VM1",
+		PaymentMethod: "digital", IsCash: false, Status: "confirmed", CreatedAt: now.Add(-10 * time.Minute),
+	})
+
+	// Query for a different metric name - should return empty
+	req := &prompb.ReadRequest{
+		Queries: []*prompb.Query{
+			{
+				StartTimestampMs: now.Add(-1 * time.Hour).UnixMilli(),
+				EndTimestampMs:   now.UnixMilli(),
+				Matchers: []*prompb.LabelMatcher{
+					{Type: prompb.LabelMatcher_EQ, Name: "__name__", Value: "some_other_metric"},
+				},
+			},
+		},
+	}
+
+	encoded := encodeRemoteReadRequest(t, req)
+	httpReq := httptest.NewRequest("POST", "/api/v1/read", bytes.NewReader(encoded))
+	httpReq.Header.Set("Content-Type", "application/x-protobuf")
+	httpReq.Header.Set("Content-Encoding", "snappy")
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, httpReq)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("Expected 200, got %d", w.Code)
+	}
+
+	resp := decodeRemoteReadResponse(t, w.Body.Bytes())
+	if len(resp.Results[0].Timeseries) != 0 {
+		t.Errorf("Expected 0 time series for wrong metric name, got %d", len(resp.Results[0].Timeseries))
+	}
+}
+
+func TestRemoteReadCashPurchases(t *testing.T) {
+	mux := setupTestEnvironment(t)
+	defer teardownTestEnvironment(t)
+
+	now := time.Now()
+	// Create a cash purchase (no UID, is_cash=true)
+	db.Create(&TransactionModel{
+		Amount: -100, Product: "snack", MachineID: "VM3",
+		PaymentMethod: "cash", IsCash: true, Status: "confirmed", CreatedAt: now.Add(-15 * time.Minute),
+	})
+
+	// Query with method=cash filter
+	req := &prompb.ReadRequest{
+		Queries: []*prompb.Query{
+			{
+				StartTimestampMs: now.Add(-1 * time.Hour).UnixMilli(),
+				EndTimestampMs:   now.UnixMilli(),
+				Matchers: []*prompb.LabelMatcher{
+					{Type: prompb.LabelMatcher_EQ, Name: "__name__", Value: "purchases_historical_total"},
+					{Type: prompb.LabelMatcher_EQ, Name: "method", Value: "cash"},
+				},
+			},
+		},
+	}
+
+	encoded := encodeRemoteReadRequest(t, req)
+	httpReq := httptest.NewRequest("POST", "/api/v1/read", bytes.NewReader(encoded))
+	httpReq.Header.Set("Content-Type", "application/x-protobuf")
+	httpReq.Header.Set("Content-Encoding", "snappy")
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, httpReq)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("Expected 200, got %d", w.Code)
+	}
+
+	resp := decodeRemoteReadResponse(t, w.Body.Bytes())
+	if len(resp.Results[0].Timeseries) != 1 {
+		t.Fatalf("Expected 1 time series for cash purchases, got %d", len(resp.Results[0].Timeseries))
+	}
+
+	// Verify method label is "cash"
+	for _, label := range resp.Results[0].Timeseries[0].Labels {
+		if label.Name == "method" && label.Value != "cash" {
+			t.Errorf("Expected method=cash, got method=%s", label.Value)
+		}
+	}
+}
+
+func TestRemoteReadIgnoresPendingTransactions(t *testing.T) {
+	mux := setupTestEnvironment(t)
+	defer teardownTestEnvironment(t)
+
+	db.Create(&User{UID: "pending-user"})
+	now := time.Now()
+	// Create one confirmed and one pending transaction
+	db.Create(&TransactionModel{
+		UID: strPtr("pending-user"), Amount: -100, Product: "1", MachineID: "VM1",
+		PaymentMethod: "digital", IsCash: false, Status: "confirmed", CreatedAt: now.Add(-20 * time.Minute),
+	})
+	db.Create(&TransactionModel{
+		UID: strPtr("pending-user"), Amount: -100, Product: "1", MachineID: "VM1",
+		PaymentMethod: "digital", IsCash: false, Status: "pending", CreatedAt: now.Add(-10 * time.Minute),
+	})
+
+	req := &prompb.ReadRequest{
+		Queries: []*prompb.Query{
+			{
+				StartTimestampMs: now.Add(-1 * time.Hour).UnixMilli(),
+				EndTimestampMs:   now.UnixMilli(),
+				Matchers: []*prompb.LabelMatcher{
+					{Type: prompb.LabelMatcher_EQ, Name: "__name__", Value: "purchases_historical_total"},
+				},
+			},
+		},
+	}
+
+	encoded := encodeRemoteReadRequest(t, req)
+	httpReq := httptest.NewRequest("POST", "/api/v1/read", bytes.NewReader(encoded))
+	httpReq.Header.Set("Content-Type", "application/x-protobuf")
+	httpReq.Header.Set("Content-Encoding", "snappy")
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, httpReq)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("Expected 200, got %d", w.Code)
+	}
+
+	resp := decodeRemoteReadResponse(t, w.Body.Bytes())
+	if len(resp.Results[0].Timeseries) != 1 {
+		t.Fatalf("Expected 1 time series, got %d", len(resp.Results[0].Timeseries))
+	}
+
+	// The last sample should have cumulative count of 1 (only the confirmed transaction)
+	ts := resp.Results[0].Timeseries[0]
+	lastSample := ts.Samples[len(ts.Samples)-1]
+	if lastSample.Value != 1 {
+		t.Errorf("Expected cumulative count of 1 (ignoring pending), got %f", lastSample.Value)
+	}
+}
+
+func TestRemoteReadInvalidBody(t *testing.T) {
+	mux := setupTestEnvironment(t)
+	defer teardownTestEnvironment(t)
+
+	// Send garbage data
+	httpReq := httptest.NewRequest("POST", "/api/v1/read", bytes.NewReader([]byte("invalid data")))
+	httpReq.Header.Set("Content-Type", "application/x-protobuf")
+	httpReq.Header.Set("Content-Encoding", "snappy")
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, httpReq)
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("Expected 400 for invalid body, got %d", w.Code)
 	}
 }
 

@@ -48,15 +48,15 @@ type VendVoucher struct {
 }
 
 type TransactionModel struct {
-	ID            uint       `gorm:"primaryKey" json:"transaction_id"`
-	UID           *string    `json:"uid"`
-	Amount        int        `json:"amount"`
-	Product       string     `json:"product"`
-	Status        string     `json:"status"`
-	PaymentMethod string     `gorm:"column:payment_method" json:"payment_method"`
-	MachineID     string     `gorm:"column:machine_id" json:"machine_id"`
-	IsCash        bool       `gorm:"default:false" json:"is_cash"`
-	CreatedAt     time.Time  `gorm:"default:CURRENT_TIMESTAMP" json:"created_at"`
+	ID            uint      `gorm:"primaryKey" json:"transaction_id"`
+	UID           *string   `json:"uid"`
+	Amount        int       `json:"amount"`
+	Product       string    `json:"product"`
+	Status        string    `json:"status"`
+	PaymentMethod string    `gorm:"column:payment_method" json:"payment_method"`
+	MachineID     string    `gorm:"column:machine_id" json:"machine_id"`
+	IsCash        bool      `gorm:"default:false" json:"is_cash"`
+	CreatedAt     time.Time `gorm:"default:CURRENT_TIMESTAMP" json:"created_at"`
 }
 
 func (TransactionModel) TableName() string {
@@ -74,8 +74,12 @@ type ProductMap struct {
 	ProductName string `json:"product_name"`
 }
 
+func (ProductMap) TableName() string {
+	return "product_map"
+}
+
 type Session struct {
-	Token     string    `gorm:"primaryKey;size:64"`
+	Token     string `gorm:"primaryKey;size:64"`
 	Email     string
 	Name      string
 	Subject   string // OIDC sub claim
@@ -206,6 +210,16 @@ type DeleteByIDRequest struct {
 	ID uint `json:"id"`
 }
 
+type EditTransactionRequest struct {
+	ID            uint    `json:"id"`
+	UID           *string `json:"uid"`
+	Amount        int     `json:"amount"`
+	Product       string  `json:"product"`
+	Status        string  `json:"status"`
+	PaymentMethod string  `json:"payment_method"`
+	MachineID     string  `json:"machine_id"`
+}
+
 var db *gorm.DB
 
 // OIDC state
@@ -214,9 +228,10 @@ var (
 	oidcProvider   *oidc.Provider
 	oauth2Config   *oauth2.Config
 	oidcVerifier   *oidc.IDTokenVerifier
-	oidcAdminClaim string
-	oidcAdminValue string
-	sessionTTL     time.Duration
+	oidcAdminClaim      string
+	oidcAdminValue      string
+	oidcSuperadminValue string
+	sessionTTL          time.Duration
 )
 
 type PurchaseCollector struct {
@@ -391,6 +406,10 @@ func initOIDC() error {
 	if oidcAdminValue == "" {
 		oidcAdminValue = "admin"
 	}
+	oidcSuperadminValue = os.Getenv("OIDC_SUPERADMIN_VALUE")
+	if oidcSuperadminValue == "" {
+		oidcSuperadminValue = "superadmin"
+	}
 
 	ttlStr := os.Getenv("OIDC_SESSION_TTL")
 	if ttlStr == "" {
@@ -433,7 +452,6 @@ func initOIDC() error {
 	log.Printf("OIDC authentication enabled (issuer: %s)", issuer)
 	return nil
 }
-
 
 func authMiddleware(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
@@ -1108,6 +1126,60 @@ func deleteVoucherHandler(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 }
 
+func editTransactionHandler(w http.ResponseWriter, r *http.Request) {
+	var req EditTransactionRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.ID == 0 {
+		http.Error(w, "Invalid request", http.StatusBadRequest)
+		return
+	}
+
+	validStatuses := map[string]bool{"pending": true, "confirmed": true, "failed": true}
+	if !validStatuses[req.Status] {
+		http.Error(w, "Invalid status (must be pending, confirmed, or failed)", http.StatusBadRequest)
+		return
+	}
+
+	var tx TransactionModel
+	if err := db.First(&tx, req.ID).Error; err != nil {
+		http.Error(w, "Transaction not found", http.StatusNotFound)
+		return
+	}
+
+	tx.UID = req.UID
+	tx.Amount = req.Amount
+	tx.Product = req.Product
+	tx.Status = req.Status
+	tx.PaymentMethod = req.PaymentMethod
+	tx.MachineID = req.MachineID
+
+	if err := db.Save(&tx).Error; err != nil {
+		http.Error(w, "Database error", http.StatusInternalServerError)
+		return
+	}
+
+	w.WriteHeader(http.StatusOK)
+}
+
+func deleteTransactionHandler(w http.ResponseWriter, r *http.Request) {
+	var req DeleteByIDRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.ID == 0 {
+		http.Error(w, "Invalid request", http.StatusBadRequest)
+		return
+	}
+
+	result := db.Where("id = ?", req.ID).Delete(&TransactionModel{})
+	if result.Error != nil {
+		http.Error(w, "Database error", http.StatusInternalServerError)
+		return
+	}
+	if result.RowsAffected == 0 {
+		http.Error(w, "Transaction not found", http.StatusNotFound)
+		return
+	}
+
+	w.WriteHeader(http.StatusOK)
+}
+
 func deletePrivilegeHandler(w http.ResponseWriter, r *http.Request) {
 	var req VoucherRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.UID == "" || req.MachineID == "" {
@@ -1199,14 +1271,19 @@ func authCallbackHandler(w http.ResponseWriter, r *http.Request) {
 	if claimValue, ok := claims[oidcAdminClaim]; ok {
 		switch v := claimValue.(type) {
 		case string:
-			if v == oidcAdminValue {
+			if v == oidcSuperadminValue {
+				role = "superadmin"
+			} else if v == oidcAdminValue {
 				role = "admin"
 			}
 		case []interface{}:
 			for _, item := range v {
+				if str, ok := item.(string); ok && str == oidcSuperadminValue {
+					role = "superadmin"
+					break
+				}
 				if str, ok := item.(string); ok && str == oidcAdminValue {
 					role = "admin"
-					break
 				}
 			}
 		}
@@ -1281,6 +1358,7 @@ func authMeHandler(w http.ResponseWriter, r *http.Request) {
 		"email":         session.Email,
 		"name":          session.Name,
 		"role":          session.Role,
+		"is_superadmin": session.Role == "superadmin",
 	})
 }
 
@@ -1656,6 +1734,11 @@ func sortInt64Slice(slice []int64) {
 func main() {
 	// Parse command-line flags
 	testMode := flag.Bool("test", false, "Run in test mode with embedded PostgreSQL and fake OIDC")
+	restoreS3Bucket := flag.String("restore-s3-bucket", "", "S3 bucket name for Barman backup restore (optional)")
+	restoreS3Endpoint := flag.String("restore-s3-endpoint", "", "S3 endpoint URL for Barman backup restore (optional)")
+	restoreServerName := flag.String("restore-server-name", "", "Server name for Barman backup restore (optional)")
+	restoreBackupID := flag.String("restore-backup-id", "", "Backup ID to restore (optional, defaults to latest)")
+	restoreDBName := flag.String("restore-db-name", "postgres", "Database name to connect to after restore (default: postgres)")
 	flag.Parse()
 
 	var testResources *TestModeResources
@@ -1663,7 +1746,7 @@ func main() {
 
 	if *testMode {
 		var err error
-		testResources, apiKey, err = setupTestMode()
+		testResources, apiKey, err = setupTestMode(*restoreS3Bucket, *restoreS3Endpoint, *restoreServerName, *restoreBackupID, *restoreDBName)
 		if err != nil {
 			log.Fatal(err)
 		}
@@ -1725,6 +1808,8 @@ func main() {
 	mux.HandleFunc("/deleteProductMapping", authMiddleware(deleteProductMappingHandler))
 	mux.HandleFunc("/deleteVoucher", authMiddleware(deleteVoucherHandler))
 	mux.HandleFunc("/deletePrivilege", authMiddleware(deletePrivilegeHandler))
+	mux.HandleFunc("/editTransaction", authMiddleware(editTransactionHandler))
+	mux.HandleFunc("/deleteTransaction", authMiddleware(deleteTransactionHandler))
 	// OIDC auth routes (no auth required, registered only if OIDC is enabled)
 	if oidcEnabled {
 		mux.HandleFunc("/auth/login", authLoginHandler)
