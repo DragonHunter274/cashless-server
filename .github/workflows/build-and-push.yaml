@@ -57,7 +57,7 @@ jobs:
           echo "branch_name=$BRANCH_NAME" >> $GITHUB_OUTPUT
 
       - name: Build cashless-server binary
-        run: go build -v -o cashless-server main.go
+        run: go build -v -o cashless-server .
         env:
           CGO_ENABLED: 0
           GOOS: linux

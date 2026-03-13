@@ -1,0 +1,25 @@
+# Frontend
+frontend/node_modules
+frontend/dist
+
+# Generated frontend build output (built from frontend/ via vite)
+static/assets/
+static/index.html
+static/vite.svg
+
+# Binaries
+cashless-server
+
+# Database
+*.db
+
+# Build artifacts
+output.txt
+output2.txt
+
+# Backups
+*.bak
+
+# Test files
+test_*.go.bak
+test_*.py
