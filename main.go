@@ -213,6 +213,13 @@ type DeleteByIDRequest struct {
 	ID uint `json:"id"`
 }
 
+type RevalueRequest struct {
+	UID       string `json:"uid"`
+	Amount    int    `json:"amount"`
+	MachineID string `json:"machine_id"`
+	SessionID string `json:"session_id"`
+}
+
 type EditTransactionRequest struct {
 	ID            uint    `json:"id"`
 	UID           *string `json:"uid"`
@@ -562,6 +569,77 @@ func topUpHandler(w http.ResponseWriter, r *http.Request) {
 
 	w.WriteHeader(http.StatusCreated)
 	fmt.Fprintln(w, "Top-up successful")
+}
+
+// @Summary Revalue (top up) via vending machine
+// @Description Accepts a revalue request from a vending machine. Each coin/bill insertion triggers a separate call. The session_id groups revalue entries belonging to the same session.
+// @Tags Users
+// @Accept json
+// @Produce json
+// @Param body body RevalueRequest true "Revalue details"
+// @Success 200 {object} map[string]interface{} "success, new_balance"
+// @Failure 400 {object} map[string]interface{} "success, error"
+// @Security ApiKeyAuth
+// @Router /makeRevalue [post]
+func makeRevalueHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req RevalueRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "error": "invalid_request"})
+		return
+	}
+
+	if req.UID == "" || req.Amount <= 0 || req.MachineID == "" || req.SessionID == "" {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "error": "missing_fields"})
+		return
+	}
+
+	if err := ensureUser(req.UID); err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusInternalServerError)
+		json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "error": "internal_error"})
+		return
+	}
+
+	transaction := TransactionModel{
+		UID:           &req.UID,
+		Amount:        req.Amount,
+		Product:       "revalue:" + req.SessionID,
+		Status:        "confirmed",
+		PaymentMethod: "cash",
+		MachineID:     req.MachineID,
+		IsCash:        true,
+	}
+
+	if err := db.Create(&transaction).Error; err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusInternalServerError)
+		json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "error": "internal_error"})
+		return
+	}
+
+	// Get updated balance
+	var balanceResult struct {
+		Balance int
+	}
+	db.Model(&TransactionModel{}).
+		Select("COALESCE(SUM(amount), 0) as balance").
+		Where("uid = ? AND status = ?", req.UID, "confirmed").
+		Scan(&balanceResult)
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"success":     true,
+		"new_balance": balanceResult.Balance,
+	})
 }
 
 // @Summary Record a cash purchase
@@ -2043,6 +2121,7 @@ func main() {
 	mux.HandleFunc("/deleteProductMapping", authMiddleware(deleteProductMappingHandler))
 	mux.HandleFunc("/deleteVoucher", authMiddleware(deleteVoucherHandler))
 	mux.HandleFunc("/deletePrivilege", authMiddleware(deletePrivilegeHandler))
+	mux.HandleFunc("/makeRevalue", authMiddleware(makeRevalueHandler))
 	mux.HandleFunc("/editTransaction", authMiddleware(editTransactionHandler))
 	mux.HandleFunc("/deleteTransaction", authMiddleware(deleteTransactionHandler))
 	// OIDC auth routes (no auth required, registered only if OIDC is enabled)

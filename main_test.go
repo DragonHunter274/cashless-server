@@ -77,7 +77,7 @@ func setupTestEnvironment(t *testing.T) *http.ServeMux {
 	// Create test API key with all permissions
 	apiKey := APIKey{
 		Key:              testAPIKey,
-		AllowedEndpoints: "/makePurchase,/confirmPurchase,/makeCashPurchase,/getBalance,/getTransactions,/getVouchers,/getPrivileges,/topUp,/createUser,/createVoucher,/createPrivilege,/getStats,/getUsers,/getAPIKeys,/createAPIKey,/deleteAPIKey,/getProductMap,/createProductMapping,/deleteProductMapping,/deleteVoucher,/deletePrivilege,/editTransaction,/deleteTransaction",
+		AllowedEndpoints: "/makePurchase,/confirmPurchase,/makeCashPurchase,/getBalance,/getTransactions,/getVouchers,/getPrivileges,/topUp,/createUser,/createVoucher,/createPrivilege,/getStats,/getUsers,/getAPIKeys,/createAPIKey,/deleteAPIKey,/getProductMap,/createProductMapping,/deleteProductMapping,/deleteVoucher,/deletePrivilege,/editTransaction,/deleteTransaction,/makeRevalue",
 	}
 	db.Create(&apiKey)
 
@@ -104,6 +104,7 @@ func setupTestEnvironment(t *testing.T) *http.ServeMux {
 	mux.HandleFunc("/deleteProductMapping", authMiddleware(deleteProductMappingHandler))
 	mux.HandleFunc("/deleteVoucher", authMiddleware(deleteVoucherHandler))
 	mux.HandleFunc("/deletePrivilege", authMiddleware(deletePrivilegeHandler))
+	mux.HandleFunc("/makeRevalue", authMiddleware(makeRevalueHandler))
 	mux.HandleFunc("/editTransaction", authMiddleware(editTransactionHandler))
 	mux.HandleFunc("/deleteTransaction", authMiddleware(deleteTransactionHandler))
 	mux.Handle("/metrics", promhttp.Handler())
@@ -1296,10 +1297,10 @@ func startTestOIDCServer(t *testing.T) *httptest.Server {
 		baseURL := fmt.Sprintf("%s://%s", scheme, r.Host)
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]interface{}{
-			"issuer":                 baseURL,
-			"authorization_endpoint": baseURL + "/authorize",
-			"token_endpoint":         baseURL + "/token",
-			"jwks_uri":               baseURL + "/keys",
+			"issuer":                                baseURL,
+			"authorization_endpoint":                baseURL + "/authorize",
+			"token_endpoint":                        baseURL + "/token",
+			"jwks_uri":                              baseURL + "/keys",
 			"id_token_signing_alg_values_supported": []string{"RS256"},
 		})
 	})
@@ -2285,6 +2286,121 @@ func TestRemoteReadInvalidBody(t *testing.T) {
 
 	if w.Code != http.StatusBadRequest {
 		t.Errorf("Expected 400 for invalid body, got %d", w.Code)
+	}
+}
+
+func TestMakeRevalue(t *testing.T) {
+	mux := setupTestEnvironment(t)
+	defer teardownTestEnvironment(t)
+
+	// Create user first
+	makeRequest(t, mux, "POST", "/createUser", map[string]interface{}{"uid": "revalue-user"}, true)
+
+	// First revalue: insert 1.00 EUR (100 cents)
+	resp := makeRequest(t, mux, "POST", "/makeRevalue", map[string]interface{}{
+		"uid":        "revalue-user",
+		"amount":     100,
+		"machine_id": "getraenkeautomat",
+		"session_id": "0xABCD1234",
+	}, true)
+
+	if resp.Code != http.StatusOK {
+		t.Fatalf("Expected 200, got %d. Body: %s", resp.Code, resp.Body.String())
+	}
+
+	var result map[string]interface{}
+	json.Unmarshal(resp.Body.Bytes(), &result)
+
+	if result["success"] != true {
+		t.Errorf("Expected success=true, got %v", result["success"])
+	}
+	if int(result["new_balance"].(float64)) != 100 {
+		t.Errorf("Expected new_balance=100, got %v", result["new_balance"])
+	}
+
+	// Second revalue in same session: insert 0.50 EUR (50 cents)
+	resp = makeRequest(t, mux, "POST", "/makeRevalue", map[string]interface{}{
+		"uid":        "revalue-user",
+		"amount":     50,
+		"machine_id": "getraenkeautomat",
+		"session_id": "0xABCD1234",
+	}, true)
+
+	if resp.Code != http.StatusOK {
+		t.Fatalf("Expected 200, got %d. Body: %s", resp.Code, resp.Body.String())
+	}
+
+	json.Unmarshal(resp.Body.Bytes(), &result)
+
+	if int(result["new_balance"].(float64)) != 150 {
+		t.Errorf("Expected new_balance=150 after second revalue, got %v", result["new_balance"])
+	}
+
+	// Verify transactions in database
+	var transactions []TransactionModel
+	db.Where("uid = ? AND product LIKE ?", "revalue-user", "revalue:%").Find(&transactions)
+	if len(transactions) != 2 {
+		t.Errorf("Expected 2 revalue transactions, got %d", len(transactions))
+	}
+
+	for _, tx := range transactions {
+		if tx.Product != "revalue:0xABCD1234" {
+			t.Errorf("Expected product 'revalue:0xABCD1234', got '%s'", tx.Product)
+		}
+		if tx.Status != "confirmed" {
+			t.Errorf("Expected status 'confirmed', got '%s'", tx.Status)
+		}
+		if tx.PaymentMethod != "cash" {
+			t.Errorf("Expected payment_method 'cash', got '%s'", tx.PaymentMethod)
+		}
+		if tx.MachineID != "getraenkeautomat" {
+			t.Errorf("Expected machine_id 'getraenkeautomat', got '%s'", tx.MachineID)
+		}
+	}
+}
+
+func TestMakeRevalueMissingFields(t *testing.T) {
+	mux := setupTestEnvironment(t)
+	defer teardownTestEnvironment(t)
+
+	// Missing UID
+	resp := makeRequest(t, mux, "POST", "/makeRevalue", map[string]interface{}{
+		"amount":     100,
+		"machine_id": "getraenkeautomat",
+		"session_id": "0xABCD1234",
+	}, true)
+
+	if resp.Code != http.StatusBadRequest {
+		t.Errorf("Expected 400 for missing UID, got %d", resp.Code)
+	}
+
+	var result map[string]interface{}
+	json.Unmarshal(resp.Body.Bytes(), &result)
+	if result["success"] != false {
+		t.Errorf("Expected success=false, got %v", result["success"])
+	}
+
+	// Missing session_id
+	resp = makeRequest(t, mux, "POST", "/makeRevalue", map[string]interface{}{
+		"uid":        "revalue-user",
+		"amount":     100,
+		"machine_id": "getraenkeautomat",
+	}, true)
+
+	if resp.Code != http.StatusBadRequest {
+		t.Errorf("Expected 400 for missing session_id, got %d", resp.Code)
+	}
+
+	// Zero amount
+	resp = makeRequest(t, mux, "POST", "/makeRevalue", map[string]interface{}{
+		"uid":        "revalue-user",
+		"amount":     0,
+		"machine_id": "getraenkeautomat",
+		"session_id": "0xABCD1234",
+	}, true)
+
+	if resp.Code != http.StatusBadRequest {
+		t.Errorf("Expected 400 for zero amount, got %d", resp.Code)
 	}
 }
 

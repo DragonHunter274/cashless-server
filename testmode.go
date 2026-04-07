@@ -715,7 +715,7 @@ func setupEmbeddedPostgres(dataDir, dbName string) (*embeddedpostgres.EmbeddedPo
 	apiKey := generateAPIKey()
 	key := APIKey{
 		Key:              apiKey,
-		AllowedEndpoints: "/makePurchase,/confirmPurchase,/makeCashPurchase,/getBalance,/getTransactions,/getVouchers,/getPrivileges,/topUp,/createUser,/createVoucher,/createPrivilege,/getStats,/getUsers,/getAPIKeys,/createAPIKey,/deleteAPIKey,/getProductMap,/createProductMapping,/deleteProductMapping,/deleteVoucher,/deletePrivilege,/editTransaction,/deleteTransaction",
+		AllowedEndpoints: "/makePurchase,/confirmPurchase,/makeCashPurchase,/getBalance,/getTransactions,/getVouchers,/getPrivileges,/topUp,/createUser,/createVoucher,/createPrivilege,/getStats,/getUsers,/getAPIKeys,/createAPIKey,/deleteAPIKey,/getProductMap,/createProductMapping,/deleteProductMapping,/deleteVoucher,/deletePrivilege,/editTransaction,/deleteTransaction,/makeRevalue",
 	}
 	if err := db.Create(&key).Error; err != nil {
 		embeddedPG.Stop()
