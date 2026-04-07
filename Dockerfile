@@ -12,10 +12,13 @@ RUN npm run build
 # Stage 2: Build Go binary
 FROM golang:1.24-alpine AS go-builder
 
+RUN go install github.com/swaggo/swag/cmd/swag@latest
+
 WORKDIR /app
 COPY go.mod go.sum ./
 RUN go mod download
 COPY *.go ./
+RUN swag init
 RUN CGO_ENABLED=0 go build -o cashless-server .
 
 # Stage 3: Final image

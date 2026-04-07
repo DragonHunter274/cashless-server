@@ -21,10 +21,13 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/prometheus/prometheus/prompb"
 	"github.com/prometheus/prometheus/storage/remote"
+	httpSwagger "github.com/swaggo/http-swagger/v2"
 	"golang.org/x/oauth2"
 	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
 	"gorm.io/gorm/logger"
+
+	_ "github.com/dragonhunter274/cashless-server/docs"
 )
 
 // GORM Models
@@ -224,10 +227,10 @@ var db *gorm.DB
 
 // OIDC state
 var (
-	oidcEnabled    bool
-	oidcProvider   *oidc.Provider
-	oauth2Config   *oauth2.Config
-	oidcVerifier   *oidc.IDTokenVerifier
+	oidcEnabled         bool
+	oidcProvider        *oidc.Provider
+	oauth2Config        *oauth2.Config
+	oidcVerifier        *oidc.IDTokenVerifier
 	oidcAdminClaim      string
 	oidcAdminValue      string
 	oidcSuperadminValue string
@@ -515,6 +518,14 @@ func ensureUser(uid string) error {
 	return db.Where(User{UID: uid}).FirstOrCreate(&user).Error
 }
 
+// @Summary Top up a user's balance
+// @Tags Users
+// @Accept json
+// @Param body body TopUpRequest true "Top-up details"
+// @Success 201 {string} string "Top-up successful"
+// @Failure 400 {string} string "Invalid top-up data"
+// @Security ApiKeyAuth
+// @Router /topUp [post]
 func topUpHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
@@ -553,6 +564,15 @@ func topUpHandler(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprintln(w, "Top-up successful")
 }
 
+// @Summary Record a cash purchase
+// @Tags Purchases
+// @Accept json
+// @Produce json
+// @Param body body CashPurchase true "Cash purchase details"
+// @Success 201 {object} map[string]interface{} "transaction_id"
+// @Failure 400 {string} string "Invalid purchase data"
+// @Security ApiKeyAuth
+// @Router /makeCashPurchase [post]
 func cashPurchaseHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
@@ -597,6 +617,17 @@ func get_product_name(id int) string {
 	return fmt.Sprintf("%d", id)
 }
 
+// @Summary Create a pending digital purchase
+// @Description Creates a pending purchase that must be confirmed within 60 seconds. Checks for free vend privileges and vouchers before charging balance.
+// @Tags Purchases
+// @Accept json
+// @Produce json
+// @Param body body PurchaseRequest true "Purchase details"
+// @Success 200 {object} map[string]interface{} "transaction_id"
+// @Failure 400 {string} string "Missing fields"
+// @Failure 403 {string} string "Insufficient balance"
+// @Security ApiKeyAuth
+// @Router /makePurchase [post]
 func makePurchaseHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
@@ -686,6 +717,15 @@ func makePurchaseHandler(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(map[string]interface{}{"transaction_id": transaction.ID})
 }
 
+// @Summary Confirm a pending purchase
+// @Tags Purchases
+// @Accept json
+// @Param body body ConfirmRequest true "Transaction ID to confirm"
+// @Success 200 {string} string "OK"
+// @Failure 400 {string} string "Bad request"
+// @Failure 404 {string} string "Transaction not found or already processed"
+// @Security ApiKeyAuth
+// @Router /confirmPurchase [post]
 func confirmPurchaseHandler(w http.ResponseWriter, r *http.Request) {
 	var req ConfirmRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -710,6 +750,15 @@ func confirmPurchaseHandler(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 }
 
+// @Summary Get user balance
+// @Tags Users
+// @Accept json
+// @Produce json
+// @Param body body BalanceRequest true "User UID"
+// @Success 200 {object} Balance
+// @Failure 400 {string} string "Invalid request"
+// @Security ApiKeyAuth
+// @Router /getBalance [post]
 func getBalanceHandler(w http.ResponseWriter, r *http.Request) {
 	var req BalanceRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.UID == "" {
@@ -728,6 +777,16 @@ func getBalanceHandler(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(Balance{UID: req.UID, Balance: balanceResult.Balance})
 }
 
+// @Summary Get transaction history
+// @Description Returns transactions with optional UID filter and pagination. Default limit 100, max 1000.
+// @Tags Transactions
+// @Accept json
+// @Produce json
+// @Param body body TransactionsRequest true "Filter and pagination options"
+// @Success 200 {array} Transaction
+// @Failure 400 {string} string "Invalid request"
+// @Security ApiKeyAuth
+// @Router /getTransactions [post]
 func getTransactionsHandler(w http.ResponseWriter, r *http.Request) {
 	var req TransactionsRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -780,6 +839,16 @@ func getTransactionsHandler(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(response)
 }
 
+// @Summary Get vouchers
+// @Description Returns vouchers with optional UID filter.
+// @Tags Vouchers
+// @Accept json
+// @Produce json
+// @Param body body UserRequest true "Optional UID filter"
+// @Success 200 {array} VendVoucher
+// @Failure 400 {string} string "Invalid request"
+// @Security ApiKeyAuth
+// @Router /getVouchers [post]
 func getVouchersHandler(w http.ResponseWriter, r *http.Request) {
 	var req UserRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -804,6 +873,16 @@ func getVouchersHandler(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(vouchers)
 }
 
+// @Summary Get machine privileges
+// @Description Returns machine privileges with optional UID filter.
+// @Tags Privileges
+// @Accept json
+// @Produce json
+// @Param body body UserRequest true "Optional UID filter"
+// @Success 200 {array} UserMachinePrivilege
+// @Failure 400 {string} string "Invalid request"
+// @Security ApiKeyAuth
+// @Router /getPrivileges [post]
 func getPrivilegesHandler(w http.ResponseWriter, r *http.Request) {
 	var req UserRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -828,6 +907,14 @@ func getPrivilegesHandler(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(privileges)
 }
 
+// @Summary Create a new user
+// @Tags Users
+// @Accept json
+// @Param body body UserRequest true "User UID"
+// @Success 200 {string} string "OK"
+// @Failure 400 {string} string "Invalid request"
+// @Security ApiKeyAuth
+// @Router /createUser [post]
 func createUserHandler(w http.ResponseWriter, r *http.Request) {
 	var req UserRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.UID == "" {
@@ -842,6 +929,14 @@ func createUserHandler(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 }
 
+// @Summary Create a voucher
+// @Tags Vouchers
+// @Accept json
+// @Param body body VoucherRequest true "Voucher details"
+// @Success 200 {string} string "OK"
+// @Failure 400 {string} string "Invalid request"
+// @Security ApiKeyAuth
+// @Router /createVoucher [post]
 func createVoucherHandler(w http.ResponseWriter, r *http.Request) {
 	var req VoucherRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.UID == "" || req.MachineID == "" {
@@ -866,6 +961,14 @@ func createVoucherHandler(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 }
 
+// @Summary Create or update a machine privilege
+// @Tags Privileges
+// @Accept json
+// @Param body body PrivilegeRequest true "Privilege details"
+// @Success 200 {string} string "OK"
+// @Failure 400 {string} string "Invalid request"
+// @Security ApiKeyAuth
+// @Router /createPrivilege [post]
 func createPrivilegeHandler(w http.ResponseWriter, r *http.Request) {
 	var req PrivilegeRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.UID == "" || req.MachineID == "" {
@@ -892,6 +995,12 @@ func createPrivilegeHandler(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 }
 
+// @Summary Get dashboard statistics
+// @Tags Stats
+// @Produce json
+// @Success 200 {object} StatsResponse
+// @Security ApiKeyAuth
+// @Router /getStats [post]
 func getStatsHandler(w http.ResponseWriter, r *http.Request) {
 	var stats StatsResponse
 
@@ -930,6 +1039,15 @@ func getStatsHandler(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(stats)
 }
 
+// @Summary Get paginated user list with balances
+// @Tags Users
+// @Accept json
+// @Produce json
+// @Param body body GetUsersRequest true "Pagination and search options"
+// @Success 200 {object} GetUsersResponse
+// @Failure 400 {string} string "Invalid request"
+// @Security ApiKeyAuth
+// @Router /getUsers [post]
 func getUsersHandler(w http.ResponseWriter, r *http.Request) {
 	var req GetUsersRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -974,6 +1092,12 @@ func getUsersHandler(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(GetUsersResponse{Users: result, Total: total})
 }
 
+// @Summary List all API keys (masked)
+// @Tags API Keys
+// @Produce json
+// @Success 200 {array} object "List of masked API keys"
+// @Security ApiKeyAuth
+// @Router /getAPIKeys [post]
 func getAPIKeysHandler(w http.ResponseWriter, r *http.Request) {
 	var keys []APIKey
 	db.Order("created_at DESC").Find(&keys)
@@ -1001,6 +1125,15 @@ func getAPIKeysHandler(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(masked)
 }
 
+// @Summary Create a new API key
+// @Tags API Keys
+// @Accept json
+// @Produce json
+// @Param body body CreateAPIKeyRequest true "Allowed endpoints (comma-separated)"
+// @Success 201 {object} APIKey
+// @Failure 400 {string} string "allowed_endpoints is required"
+// @Security ApiKeyAuth
+// @Router /createAPIKey [post]
 func createAPIKeyHandler(w http.ResponseWriter, r *http.Request) {
 	var req CreateAPIKeyRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -1028,6 +1161,15 @@ func createAPIKeyHandler(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(key)
 }
 
+// @Summary Delete an API key
+// @Tags API Keys
+// @Accept json
+// @Param body body DeleteAPIKeyRequest true "API key to delete"
+// @Success 200 {string} string "OK"
+// @Failure 400 {string} string "Cannot delete the API key currently in use"
+// @Failure 404 {string} string "API key not found"
+// @Security ApiKeyAuth
+// @Router /deleteAPIKey [post]
 func deleteAPIKeyHandler(w http.ResponseWriter, r *http.Request) {
 	var req DeleteAPIKeyRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Key == "" {
@@ -1055,6 +1197,12 @@ func deleteAPIKeyHandler(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 }
 
+// @Summary List all product mappings
+// @Tags Products
+// @Produce json
+// @Success 200 {array} ProductMap
+// @Security ApiKeyAuth
+// @Router /getProductMap [post]
 func getProductMapHandler(w http.ResponseWriter, r *http.Request) {
 	var products []ProductMap
 	db.Order("id ASC").Find(&products)
@@ -1063,6 +1211,14 @@ func getProductMapHandler(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(products)
 }
 
+// @Summary Create or update a product mapping
+// @Tags Products
+// @Accept json
+// @Param body body ProductMapRequest true "Product ID and name"
+// @Success 200 {string} string "OK"
+// @Failure 400 {string} string "id and product_name are required"
+// @Security ApiKeyAuth
+// @Router /createProductMapping [post]
 func createProductMappingHandler(w http.ResponseWriter, r *http.Request) {
 	var req ProductMapRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -1084,6 +1240,14 @@ func createProductMappingHandler(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 }
 
+// @Summary Delete a product mapping
+// @Tags Products
+// @Accept json
+// @Param body body DeleteByIDRequest true "Product ID to delete"
+// @Success 200 {string} string "OK"
+// @Failure 404 {string} string "Product mapping not found"
+// @Security ApiKeyAuth
+// @Router /deleteProductMapping [post]
 func deleteProductMappingHandler(w http.ResponseWriter, r *http.Request) {
 	var req DeleteByIDRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.ID == 0 {
@@ -1104,6 +1268,15 @@ func deleteProductMappingHandler(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 }
 
+// @Summary Delete an unused voucher
+// @Tags Vouchers
+// @Accept json
+// @Param body body DeleteByIDRequest true "Voucher ID to delete"
+// @Success 200 {string} string "OK"
+// @Failure 400 {string} string "Cannot delete used voucher"
+// @Failure 404 {string} string "Voucher not found"
+// @Security ApiKeyAuth
+// @Router /deleteVoucher [post]
 func deleteVoucherHandler(w http.ResponseWriter, r *http.Request) {
 	var req DeleteByIDRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.ID == 0 {
@@ -1126,6 +1299,15 @@ func deleteVoucherHandler(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 }
 
+// @Summary Edit a transaction
+// @Tags Transactions
+// @Accept json
+// @Param body body EditTransactionRequest true "Updated transaction fields"
+// @Success 200 {string} string "OK"
+// @Failure 400 {string} string "Invalid request"
+// @Failure 404 {string} string "Transaction not found"
+// @Security ApiKeyAuth
+// @Router /editTransaction [post]
 func editTransactionHandler(w http.ResponseWriter, r *http.Request) {
 	var req EditTransactionRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.ID == 0 {
@@ -1160,6 +1342,14 @@ func editTransactionHandler(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 }
 
+// @Summary Delete a transaction
+// @Tags Transactions
+// @Accept json
+// @Param body body DeleteByIDRequest true "Transaction ID to delete"
+// @Success 200 {string} string "OK"
+// @Failure 404 {string} string "Transaction not found"
+// @Security ApiKeyAuth
+// @Router /deleteTransaction [post]
 func deleteTransactionHandler(w http.ResponseWriter, r *http.Request) {
 	var req DeleteByIDRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.ID == 0 {
@@ -1180,6 +1370,14 @@ func deleteTransactionHandler(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 }
 
+// @Summary Delete a machine privilege
+// @Tags Privileges
+// @Accept json
+// @Param body body VoucherRequest true "UID and machine ID"
+// @Success 200 {string} string "OK"
+// @Failure 404 {string} string "Privilege not found"
+// @Security ApiKeyAuth
+// @Router /deletePrivilege [post]
 func deletePrivilegeHandler(w http.ResponseWriter, r *http.Request) {
 	var req VoucherRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.UID == "" || req.MachineID == "" {
@@ -1202,6 +1400,11 @@ func deletePrivilegeHandler(w http.ResponseWriter, r *http.Request) {
 
 // OIDC Auth Handlers
 
+// @Summary Initiate OIDC login
+// @Tags Auth
+// @Success 302 {string} string "Redirect to OIDC provider"
+// @Failure 404 {string} string "OIDC not configured"
+// @Router /auth/login [get]
 func authLoginHandler(w http.ResponseWriter, r *http.Request) {
 	if !oidcEnabled {
 		http.Error(w, "OIDC not configured", http.StatusNotFound)
@@ -1220,6 +1423,11 @@ func authLoginHandler(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, oauth2Config.AuthCodeURL(state), http.StatusFound)
 }
 
+// @Summary OIDC callback handler
+// @Tags Auth
+// @Success 302 {string} string "Redirect to /"
+// @Failure 400 {string} string "Invalid state"
+// @Router /auth/callback [get]
 func authCallbackHandler(w http.ResponseWriter, r *http.Request) {
 	if !oidcEnabled {
 		http.Error(w, "OIDC not configured", http.StatusNotFound)
@@ -1322,6 +1530,10 @@ func authCallbackHandler(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, "/", http.StatusFound)
 }
 
+// @Summary Logout and clear session
+// @Tags Auth
+// @Success 200 {string} string "OK"
+// @Router /auth/logout [post]
 func authLogoutHandler(w http.ResponseWriter, r *http.Request) {
 	cookie, err := r.Cookie("session")
 	if err == nil {
@@ -1338,6 +1550,12 @@ func authLogoutHandler(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 }
 
+// @Summary Get current session info
+// @Tags Auth
+// @Produce json
+// @Success 200 {object} map[string]interface{} "Session info"
+// @Failure 401 {string} string "Not authenticated"
+// @Router /auth/me [get]
 func authMeHandler(w http.ResponseWriter, r *http.Request) {
 	cookie, err := r.Cookie("session")
 	if err != nil {
@@ -1402,7 +1620,14 @@ func corsMiddleware(next http.Handler) http.Handler {
 	})
 }
 
-// Prometheus Remote Read handler - allows querying historical metrics from the database
+// @Summary Prometheus Remote Read endpoint
+// @Description Allows querying historical purchase metrics from the database using the Prometheus remote read protocol.
+// @Tags Monitoring
+// @Accept application/x-protobuf
+// @Produce application/x-protobuf
+// @Success 200 {string} string "Protobuf encoded response"
+// @Failure 400 {string} string "Bad request"
+// @Router /api/v1/read [post]
 func remoteReadHandler(w http.ResponseWriter, r *http.Request) {
 	req, err := remote.DecodeReadRequest(r)
 	if err != nil {
@@ -1731,6 +1956,16 @@ func sortInt64Slice(slice []int64) {
 	}
 }
 
+// @title Cashless Server API
+// @version 1.0
+// @description Cashless payment server for managing digital wallets, cash purchases, vouchers, and vending machine privileges.
+//
+// @host localhost:8080
+// @BasePath /
+//
+// @securityDefinitions.apikey ApiKeyAuth
+// @in header
+// @name X-API-Key
 func main() {
 	// Parse command-line flags
 	testMode := flag.Bool("test", false, "Run in test mode with embedded PostgreSQL and fake OIDC")
@@ -1820,6 +2055,9 @@ func main() {
 
 	mux.Handle("/metrics", promhttp.Handler())
 	mux.HandleFunc("/api/v1/read", remoteReadHandler) // Prometheus Remote Read endpoint (no auth required)
+
+	// Swagger UI
+	mux.HandleFunc("/swagger/", httpSwagger.WrapHandler)
 
 	// Serve static files from the static directory
 	fs := http.FileServer(http.Dir("./static"))
