@@ -56,6 +56,11 @@ jobs:
           echo "branch_tag=$BRANCH_TAG" >> $GITHUB_OUTPUT
           echo "branch_name=$BRANCH_NAME" >> $GITHUB_OUTPUT
 
+      - name: Generate Swagger docs
+        run: |
+          go install github.com/swaggo/swag/cmd/swag@latest
+          swag init
+
       - name: Build cashless-server binary
         run: go build -v -o cashless-server .
         env:
