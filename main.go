@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"regexp"
 	"strings"
 	"sync"
 	"syscall"
@@ -1721,6 +1722,9 @@ func remoteReadHandler(w http.ResponseWriter, r *http.Request) {
 		resp.Results[i] = executeRemoteReadQuery(query)
 	}
 
+	w.Header().Set("Content-Type", "application/x-protobuf")
+	w.Header().Set("Content-Encoding", "snappy")
+
 	if err := remote.EncodeReadResponse(resp, w); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -1729,34 +1733,46 @@ func remoteReadHandler(w http.ResponseWriter, r *http.Request) {
 
 // Helper function to check if a time series matches label matchers
 func matchesLabels(ts *prompb.TimeSeries, matchers []*prompb.LabelMatcher) bool {
-	labelMap := make(map[string]string)
+	labels := make(map[string]string)
 	for _, label := range ts.Labels {
-		labelMap[label.Name] = label.Value
+		labels[label.Name] = label.Value
 	}
 
 	for _, matcher := range matchers {
-		value, exists := labelMap[matcher.Name]
-		if !exists {
-			value = ""
+		// Skip internal Prometheus labels not present on our time series
+		if strings.HasPrefix(matcher.Name, "prometheus") ||
+			matcher.Name == "job" || matcher.Name == "instance" ||
+			matcher.Name == "endpoint" || matcher.Name == "namespace" ||
+			matcher.Name == "pod" || matcher.Name == "service" ||
+			(strings.HasPrefix(matcher.Name, "__") && matcher.Name != "__name__") {
+			continue
 		}
+
+		labelValue, exists := labels[matcher.Name]
 
 		switch matcher.Type {
 		case prompb.LabelMatcher_EQ:
-			if value != matcher.Value {
+			if !exists || labelValue != matcher.Value {
 				return false
 			}
 		case prompb.LabelMatcher_NEQ:
-			if value == matcher.Value {
+			if exists && labelValue == matcher.Value {
 				return false
 			}
 		case prompb.LabelMatcher_RE:
-			// Simple regex match for common patterns
-			if !strings.Contains(value, matcher.Value) {
+			if !exists {
+				return false
+			}
+			matched, err := regexp.MatchString(matcher.Value, labelValue)
+			if err != nil || !matched {
 				return false
 			}
 		case prompb.LabelMatcher_NRE:
-			if strings.Contains(value, matcher.Value) {
-				return false
+			if exists {
+				matched, err := regexp.MatchString(matcher.Value, labelValue)
+				if err != nil || matched {
+					return false
+				}
 			}
 		}
 	}
