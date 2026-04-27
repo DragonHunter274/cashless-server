@@ -1,7 +1,8 @@
 # syntax=docker/dockerfile:1
 
 # Stage 1: Build frontend
-FROM node:22-alpine AS frontend-builder
+# Pin to amd64 to avoid QEMU crashes during cross-platform builds; output is platform-independent JS/CSS
+FROM --platform=linux/amd64 node:22-alpine AS frontend-builder
 
 WORKDIR /app/frontend
 COPY frontend/package.json frontend/package-lock.json ./
