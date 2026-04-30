@@ -610,17 +610,35 @@ func makeRevalueHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	transaction := TransactionModel{
-		UID:           &req.UID,
-		Amount:        req.Amount,
-		Product:       "revalue:" + req.SessionID,
-		Status:        "confirmed",
-		PaymentMethod: "cash",
-		MachineID:     req.MachineID,
-		IsCash:        true,
-	}
+	productKey := "revalue:" + req.SessionID
+	var existing TransactionModel
+	findResult := db.Where("uid = ? AND product = ?", req.UID, productKey).First(&existing)
 
-	if err := db.Create(&transaction).Error; err != nil {
+	if findResult.Error == nil {
+		// Merge into existing transaction for this session
+		if err := db.Model(&existing).UpdateColumn("amount", existing.Amount+req.Amount).Error; err != nil {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusInternalServerError)
+			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "error": "internal_error"})
+			return
+		}
+	} else if findResult.Error == gorm.ErrRecordNotFound {
+		transaction := TransactionModel{
+			UID:           &req.UID,
+			Amount:        req.Amount,
+			Product:       productKey,
+			Status:        "confirmed",
+			PaymentMethod: "cash",
+			MachineID:     req.MachineID,
+			IsCash:        true,
+		}
+		if err := db.Create(&transaction).Error; err != nil {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusInternalServerError)
+			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "error": "internal_error"})
+			return
+		}
+	} else {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusInternalServerError)
 		json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "error": "internal_error"})
