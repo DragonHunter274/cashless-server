@@ -314,7 +314,8 @@ func (c *PurchaseCollector) Collect(ch chan<- prometheus.Metric) {
         FROM transactions
         WHERE status = 'confirmed'
         AND amount < 0
-        GROUP BY product, machine_id, is_cash, payment_method
+        GROUP BY product, machine_id,
+            (CASE WHEN is_cash = true THEN 'cash' ELSE COALESCE(payment_method, 'unknown') END)
     `).Scan(&results).Error
 
 	if err != nil {
@@ -688,11 +689,12 @@ func cashPurchaseHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	transaction := TransactionModel{
-		Amount:    -purchase.Amount,
-		Status:    "confirmed",
-		Product:   get_product_name(purchase.Product),
-		MachineID: purchase.MachineID,
-		IsCash:    true,
+		Amount:        -purchase.Amount,
+		Status:        "confirmed",
+		Product:       get_product_name(purchase.Product),
+		MachineID:     purchase.MachineID,
+		IsCash:        true,
+		PaymentMethod: "cash",
 	}
 
 	if err := db.Create(&transaction).Error; err != nil {
@@ -1867,7 +1869,8 @@ func executeRemoteReadQuery(query *prompb.Query) *prompb.QueryResult {
 			END as method,
 			created_at,
 			COUNT(*) OVER (
-				PARTITION BY product, machine_id, is_cash, payment_method
+				PARTITION BY product, machine_id,
+				(CASE WHEN is_cash = true THEN 'cash' ELSE COALESCE(payment_method, 'unknown') END)
 				ORDER BY created_at
 				ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
 			) as cumulative_count
@@ -1896,7 +1899,7 @@ func executeRemoteReadQuery(query *prompb.Query) *prompb.QueryResult {
 		}
 	}
 
-	sqlQuery += " ORDER BY product, machine_id, is_cash, payment_method, created_at"
+	sqlQuery += " ORDER BY product, machine_id, (CASE WHEN is_cash = true THEN 'cash' ELSE COALESCE(payment_method, 'unknown') END), created_at"
 
 	type RemoteReadRow struct {
 		Product         string
