@@ -123,9 +123,22 @@ export OIDC_ADMIN_VALUE=cashless-admin
 
 ## Architecture
 
-### Single-File Application Structure
+### File Organization
 
-This is a monolithic single-file Go application ([main.go](main.go)) that handles all functionality. All code exists in the `main` package.
+All code lives in the `main` package, split by responsibility:
+
+- [main.go](main.go) - flag parsing, route registration, server startup/shutdown
+- [models.go](models.go) - GORM models, request/response structs, package-level state (`db`, OIDC config vars)
+- [db.go](db.go) - `initDB`, `ensureUser`, `generateAPIKey`
+- [auth.go](auth.go) - OIDC setup, `authMiddleware`, session cleanup, `/auth/*` handlers
+- [handlers_purchase.go](handlers_purchase.go) - purchase/top-up/revalue/transaction handlers
+- [handlers_user.go](handlers_user.go) - balance, user creation, stats, user listing handlers
+- [handlers_voucher.go](handlers_voucher.go) - voucher and privilege handlers
+- [handlers_admin.go](handlers_admin.go) - API key and product map handlers
+- [middleware.go](middleware.go) - `corsMiddleware`, `ternary` helper
+- [metrics.go](metrics.go) - Prometheus `PurchaseCollector`
+- [remote_read.go](remote_read.go) - Prometheus remote-read endpoint
+- [testmode.go](testmode.go) - embedded Postgres + fake OIDC for `-test` mode
 
 ### Database Schema
 
@@ -157,7 +170,7 @@ Transactions are distinguished by:
 
 ### Free Vend Logic
 
-The purchase handler ([main.go:369-442](main.go#L369-L442)) checks for free vends in this priority order:
+The purchase handler ([handlers_purchase.go:212-299](handlers_purchase.go#L212-L299)) checks for free vends in this priority order:
 1. **Machine privileges** - If user has `free_vend = true` for that machine
 2. **Vouchers** - If user has an unused voucher for that machine
 3. **Normal payment** - User balance is checked and debited
@@ -180,7 +193,7 @@ All endpoints except `/metrics` require API key authentication via the `X-API-Ke
 
 ### CORS Middleware
 
-The server implements permissive CORS ([main.go:539-555](main.go#L539-L555)):
+The server implements permissive CORS ([middleware.go:12-29](middleware.go#L12-L29)):
 - Allows all origins (`Access-Control-Allow-Origin: *`)
 - Allows `POST`, `GET`, `OPTIONS` methods
 - Allows `Content-Type` and `X-API-Key` headers
@@ -189,15 +202,15 @@ The server implements permissive CORS ([main.go:539-555](main.go#L539-L555)):
 
 ### Product Name Resolution
 
-The `get_product_name()` function ([main.go:360-367](main.go#L360-L367)) looks up product names from the `product_map` table. If no mapping exists, it returns the product ID as a string.
+The `get_product_name()` function ([handlers_purchase.go:192-198](handlers_purchase.go#L192-L198)) looks up product names from the `product_map` table. If no mapping exists, it returns the product ID as a string.
 
 ### User Creation Pattern
 
-The `ensureUser()` helper ([main.go:282-285](main.go#L282-L285)) uses `INSERT ... ON CONFLICT DO NOTHING` to idempotently create users. This is called before any operation that requires a user to exist.
+The `ensureUser()` helper ([db.go:66-70](db.go#L66-L70)) uses `FirstOrCreate` to idempotently create users. This is called before any operation that requires a user to exist.
 
 ### Pending Transaction Timeout
 
-A goroutine is spawned for each purchase ([main.go:435-438](main.go#L435-L438)) that waits 60 seconds and marks the transaction as `failed` if still `pending`. This prevents zombie pending transactions.
+A goroutine is spawned for each purchase ([handlers_purchase.go:290-295](handlers_purchase.go#L290-L295)) that waits 60 seconds and marks the transaction as `failed` if still `pending`. This prevents zombie pending transactions.
 
 ### Database Indexes
 
@@ -269,7 +282,7 @@ Both methods provide full access to all features. Sessions and API keys are mana
 
 ### Static Files
 
-Static files are served from the `./static` directory ([main.go:1025-1026](main.go#L1025-L1026)). The server uses Go's built-in `http.FileServer` to serve the web frontend.
+Static files are served from the `./static` directory ([main.go:123-124](main.go#L123-L124)). The server uses Go's built-in `http.FileServer` to serve the web frontend.
 
 ## Deployment
 
@@ -366,4 +379,4 @@ func TestYourEndpoint(t *testing.T) {
 
 ## Known Issues and Fixes
 
-- **Voucher marking fix** ([main.go:431](main.go#L431)): The code uses a subquery to select a specific voucher ID before marking it used, avoiding potential issues with PostgreSQL's lack of `LIMIT` support in `UPDATE` statements.
+- **Voucher marking fix** ([handlers_purchase.go:282-286](handlers_purchase.go#L282-L286)): The code uses a subquery to select a specific voucher ID before marking it used, avoiding potential issues with PostgreSQL's lack of `LIMIT` support in `UPDATE` statements.

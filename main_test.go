@@ -2336,11 +2336,11 @@ func TestMakeRevalue(t *testing.T) {
 		t.Errorf("Expected new_balance=150 after second revalue, got %v", result["new_balance"])
 	}
 
-	// Verify transactions in database
+	// Verify transactions in database - same session_id merges into one row
 	var transactions []TransactionModel
 	db.Where("uid = ? AND product LIKE ?", "revalue-user", "revalue:%").Find(&transactions)
-	if len(transactions) != 2 {
-		t.Errorf("Expected 2 revalue transactions, got %d", len(transactions))
+	if len(transactions) != 1 {
+		t.Errorf("Expected 1 revalue transaction (merged by session), got %d", len(transactions))
 	}
 
 	for _, tx := range transactions {
