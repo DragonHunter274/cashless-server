@@ -255,11 +255,16 @@ func firmwareManifestHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	scheme := "http"
+	if r.TLS != nil || r.Header.Get("X-Forwarded-Proto") == "https" {
+		scheme = "https"
+	}
+
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]string{
 		"type":    "mdb-cashless",
 		"version": firmware.Version,
-		"bin":     "firmware.img",
+		"url":     scheme + "://" + r.Host + "/firmware/firmware.img",
 	})
 }
 
