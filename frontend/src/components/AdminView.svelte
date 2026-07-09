@@ -16,6 +16,7 @@ import Privileges from '../pages/admin/Privileges.svelte';
 import Transactions from '../pages/admin/Transactions.svelte';
 import Products from '../pages/admin/Products.svelte';
 import APIKeys from '../pages/admin/APIKeys.svelte';
+import Firmware from '../pages/admin/Firmware.svelte';
 
 const routes = {
     '/': Dashboard,
@@ -27,6 +28,7 @@ const routes = {
     '/transactions': Transactions,
     '/products': Products,
     '/apikeys': APIKeys,
+    '/firmware': Firmware,
 };
 
 let sidebarOpen = false;
@@ -115,6 +117,10 @@ function isActive(path) {
             <a class="nav-item" class:active={isActive('/apikeys')} href="#/apikeys" on:click={toggleSidebar}>
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 5.5 5.5 0 0 1 7.777-7.777zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4"/></svg>
                 API Keys
+            </a>
+            <a class="nav-item" class:active={isActive('/firmware')} href="#/firmware" on:click={toggleSidebar}>
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="4" y="4" width="16" height="16" rx="2"/><rect x="9" y="9" width="6" height="6"/><line x1="9" y1="1" x2="9" y2="4"/><line x1="15" y1="1" x2="15" y2="4"/><line x1="9" y1="20" x2="9" y2="23"/><line x1="15" y1="20" x2="15" y2="23"/><line x1="1" y1="9" x2="4" y2="9"/><line x1="1" y1="15" x2="4" y2="15"/><line x1="20" y1="9" x2="23" y2="9"/><line x1="20" y1="15" x2="23" y2="15"/></svg>
+                Firmware
             </a>
         </nav>
     </aside>

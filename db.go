@@ -49,6 +49,7 @@ func initDB() error {
 		&APIKey{},
 		&ProductMap{},
 		&Session{},
+		&Firmware{},
 	)
 	if err != nil {
 		return err

@@ -19,7 +19,9 @@ const ALL_ENDPOINTS = [
     '/makePurchase', '/confirmPurchase', '/makeCashPurchase', '/topUp',
     '/createUser', '/createVoucher', '/createPrivilege',
     '/createAPIKey', '/deleteAPIKey', '/createProductMapping',
-    '/deleteProductMapping', '/deleteVoucher', '/deletePrivilege'
+    '/deleteProductMapping', '/deleteVoucher', '/deletePrivilege',
+    '/uploadFirmware', '/getFirmwareList', '/activateFirmware',
+    '/deleteFirmware', '/firmware/firmware.img'
 ];
 
 async function loadAPIKeys() {

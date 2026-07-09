@@ -121,6 +121,14 @@ export OIDC_ADMIN_VALUE=cashless-admin
 - **Admin role**: Granted when the OIDC ID token contains the admin value in the configured claim (e.g., `"admin"` in the `groups` claim). Admins have full access to all endpoints.
 - **User role**: All other authenticated users. Currently has the same access as admins, but the infrastructure is in place for future role-based restrictions.
 
+### Firmware Signature Verification (Optional)
+
+By default the server accepts any uploaded firmware.img that's at least 512 bytes (the embedded signature size) without checking the signature itself - devices verify it before flashing regardless. To also fail fast on bad uploads at the server, set:
+
+- `FIRMWARE_RSA_PUBLIC_KEY_PATH` - Path to a PEM-encoded RSA public key (the same `rsa_key.pub` embedded in device firmware, see [spec/ota.md](spec/ota.md)). When set, `/uploadFirmware` verifies the embedded RSA-SHA256 signature and rejects the upload on mismatch.
+
+The private key never needs to be provided to or stored on the server.
+
 ## Architecture
 
 ### File Organization
@@ -135,6 +143,7 @@ All code lives in the `main` package, split by responsibility:
 - [handlers_user.go](handlers_user.go) - balance, user creation, stats, user listing handlers
 - [handlers_voucher.go](handlers_voucher.go) - voucher and privilege handlers
 - [handlers_admin.go](handlers_admin.go) - API key and product map handlers
+- [handlers_firmware.go](handlers_firmware.go) - firmware upload/activation/deletion and the public OTA manifest/binary endpoints
 - [middleware.go](middleware.go) - `corsMiddleware`, `ternary` helper
 - [metrics.go](metrics.go) - Prometheus `PurchaseCollector`
 - [remote_read.go](remote_read.go) - Prometheus remote-read endpoint
@@ -142,7 +151,7 @@ All code lives in the `main` package, split by responsibility:
 
 ### Database Schema
 
-The application manages seven PostgreSQL tables (auto-created on startup):
+The application manages eight PostgreSQL tables (auto-created on startup):
 
 1. **users** - User accounts with UIDs
 2. **transactions** - All financial transactions (top-ups, purchases, refunds)
@@ -151,6 +160,7 @@ The application manages seven PostgreSQL tables (auto-created on startup):
 5. **api_keys** - API authentication with endpoint-level permissions
 6. **product_map** - Maps product IDs to human-readable product names
 7. **sessions** - OIDC session tokens with user info and expiration (only used when OIDC is enabled)
+8. **firmware** - Uploaded signed firmware images (version, binary blob, active flag) for OTA updates
 
 ### Transaction States and Workflow
 
@@ -219,6 +229,15 @@ The schema includes three performance indexes:
 - `idx_transactions_uid` - For user balance queries
 - `idx_transactions_metrics` - Composite index for Prometheus metric aggregation
 
+### Firmware / OTA Updates
+
+Implements the signed OTA firmware distribution described in [spec/ota.md](spec/ota.md) (esp32FOTA-compatible). Signing happens entirely off-server with a private key that never touches the server - admins upload an already-signed `firmware.img` (`[512-byte RSA signature][firmware binary]`) via the web UI, which is stored as a `bytea` blob in the `firmware` table ([handlers_firmware.go](handlers_firmware.go)).
+
+- **Upload vs. activate are separate steps**: `/uploadFirmware` stores a new version but does not publish it; `/activateFirmware` flips exactly one row's `active` flag (deactivating any previously active version) to publish it to devices. This makes rollback a matter of re-activating an older uploaded version.
+- **Optional upload-time signature verification**: if `FIRMWARE_RSA_PUBLIC_KEY_PATH` env var points to a PEM-encoded RSA public key (the same `rsa_key.pub` embedded in device firmware), uploads are verified server-side and rejected on mismatch. If unset, verification is skipped - devices still verify the signature themselves before flashing, so this is purely a fail-fast convenience for admins.
+- **Device-facing endpoints** (`GET /firmware/manifest.json`, `GET /firmware/firmware.img`) serve the currently active firmware in the exact layout `spec/ota.md` expects: a manifest with `{"type":"esp32-fota-http","version":...,"bin":"firmware.img"}` and the binary at a path relative to the manifest. `/firmware/manifest.json` is public (no auth) so `OTA_MANIFEST_URL` on the device needs no credentials; `/firmware/firmware.img` requires an API key or OIDC session, so devices must be configured with an `X-API-Key` header to download the binary.
+- Firmware list/detail responses never include the binary blob (`Data` is `json:"-"` and list queries `.Omit("data")`) to keep admin list calls cheap.
+
 ## Endpoints
 
 All endpoints require authentication via `X-API-Key` header or OIDC session cookie, except the public endpoints listed below:
@@ -247,6 +266,11 @@ All endpoints require authentication via `X-API-Key` header or OIDC session cook
 - `POST /deleteProductMapping` - Delete a product mapping
 - `POST /deleteVoucher` - Delete an unused voucher (rejects used vouchers)
 - `POST /deletePrivilege` - Delete a machine privilege
+- `POST /uploadFirmware` - Upload a signed firmware.img for a version (multipart form: `version`, `firmware`); does not activate it
+- `POST /getFirmwareList` - List uploaded firmware versions (metadata only, no binary)
+- `POST /activateFirmware` - Publish a version as the active firmware served to devices
+- `POST /deleteFirmware` - Delete an uploaded, non-active firmware version
+- `GET /firmware/firmware.img` - Download the active signed firmware binary (requires `X-API-Key`, unlike the manifest)
 
 ### OIDC Authentication Endpoints (no auth, only registered when OIDC is enabled)
 - `GET /auth/login` - Initiate OIDC login flow (redirects to OIDC provider)
@@ -257,6 +281,7 @@ All endpoints require authentication via `X-API-Key` header or OIDC session cook
 ### Public Endpoints (no auth)
 - `GET /metrics` - Prometheus metrics
 - `GET /` - Web admin frontend
+- `GET /firmware/manifest.json` - OTA manifest for the active firmware (consumed directly by devices, see spec/ota.md)
 
 ## Web Frontend
 
@@ -270,6 +295,7 @@ The server includes a modern single-page web application for managing all aspect
 - **Voucher Management**: Create single-use vouchers for specific users and machines
 - **Privilege Management**: Grant free vend privileges to users on specific machines
 - **Transaction History**: View all transactions with filtering by user and pagination
+- **Firmware Management**: Upload signed firmware images and activate/roll back which version is served to devices
 - **Responsive Design**: Works on desktop, tablet, and mobile devices
 
 ### Access

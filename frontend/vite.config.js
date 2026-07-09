@@ -34,6 +34,11 @@ export default defineConfig({
       '/deleteProductMapping': 'http://localhost:8080',
       '/deleteVoucher': 'http://localhost:8080',
       '/deletePrivilege': 'http://localhost:8080',
+      '/uploadFirmware': 'http://localhost:8080',
+      '/getFirmwareList': 'http://localhost:8080',
+      '/activateFirmware': 'http://localhost:8080',
+      '/deleteFirmware': 'http://localhost:8080',
+      '/firmware': 'http://localhost:8080',
     }
   }
 })

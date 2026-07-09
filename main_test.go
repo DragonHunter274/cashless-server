@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"math/big"
+	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -73,11 +74,12 @@ func setupTestEnvironment(t *testing.T) *http.ServeMux {
 	db.Exec("DELETE FROM api_keys")
 	db.Exec("DELETE FROM product_map")
 	db.Exec("DELETE FROM sessions")
+	db.Exec("DELETE FROM firmware")
 
 	// Create test API key with all permissions
 	apiKey := APIKey{
 		Key:              testAPIKey,
-		AllowedEndpoints: "/makePurchase,/confirmPurchase,/makeCashPurchase,/getBalance,/getTransactions,/getVouchers,/getPrivileges,/topUp,/createUser,/createVoucher,/createPrivilege,/getStats,/getUsers,/getAPIKeys,/createAPIKey,/deleteAPIKey,/getProductMap,/createProductMapping,/deleteProductMapping,/deleteVoucher,/deletePrivilege,/editTransaction,/deleteTransaction,/makeRevalue",
+		AllowedEndpoints: "/makePurchase,/confirmPurchase,/makeCashPurchase,/getBalance,/getTransactions,/getVouchers,/getPrivileges,/topUp,/createUser,/createVoucher,/createPrivilege,/getStats,/getUsers,/getAPIKeys,/createAPIKey,/deleteAPIKey,/getProductMap,/createProductMapping,/deleteProductMapping,/deleteVoucher,/deletePrivilege,/editTransaction,/deleteTransaction,/makeRevalue,/uploadFirmware,/getFirmwareList,/activateFirmware,/deleteFirmware,/firmware/firmware.img",
 	}
 	db.Create(&apiKey)
 
@@ -107,6 +109,12 @@ func setupTestEnvironment(t *testing.T) *http.ServeMux {
 	mux.HandleFunc("/makeRevalue", authMiddleware(makeRevalueHandler))
 	mux.HandleFunc("/editTransaction", authMiddleware(editTransactionHandler))
 	mux.HandleFunc("/deleteTransaction", authMiddleware(deleteTransactionHandler))
+	mux.HandleFunc("/uploadFirmware", authMiddleware(uploadFirmwareHandler))
+	mux.HandleFunc("/getFirmwareList", authMiddleware(getFirmwareListHandler))
+	mux.HandleFunc("/activateFirmware", authMiddleware(activateFirmwareHandler))
+	mux.HandleFunc("/deleteFirmware", authMiddleware(deleteFirmwareHandler))
+	mux.HandleFunc("/firmware/manifest.json", firmwareManifestHandler)
+	mux.HandleFunc("/firmware/firmware.img", authMiddleware(firmwareBinaryHandler))
 	mux.Handle("/metrics", promhttp.Handler())
 	mux.HandleFunc("/api/v1/read", remoteReadHandler)
 
@@ -162,6 +170,54 @@ func makeRequest(t *testing.T, mux *http.ServeMux, method, path string, body int
 	handler.ServeHTTP(recorder, req)
 
 	return recorder
+}
+
+// makeFirmwareUploadRequest builds a multipart/form-data request against /uploadFirmware.
+// If version is empty, the "version" field is omitted entirely. If fileBytes is nil,
+// the "firmware" file part is omitted entirely.
+func makeFirmwareUploadRequest(t *testing.T, mux *http.ServeMux, version string, fileBytes []byte, includeAPIKey bool) *httptest.ResponseRecorder {
+	var buf bytes.Buffer
+	writer := multipart.NewWriter(&buf)
+
+	if version != "" {
+		if err := writer.WriteField("version", version); err != nil {
+			t.Fatalf("Failed to write version field: %v", err)
+		}
+	}
+
+	if fileBytes != nil {
+		part, err := writer.CreateFormFile("firmware", "firmware.img")
+		if err != nil {
+			t.Fatalf("Failed to create form file: %v", err)
+		}
+		if _, err := part.Write(fileBytes); err != nil {
+			t.Fatalf("Failed to write file bytes: %v", err)
+		}
+	}
+
+	if err := writer.Close(); err != nil {
+		t.Fatalf("Failed to close multipart writer: %v", err)
+	}
+
+	req := httptest.NewRequest("POST", "/uploadFirmware", &buf)
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+	if includeAPIKey {
+		req.Header.Set("X-API-Key", testAPIKey)
+	}
+
+	recorder := httptest.NewRecorder()
+	handler := corsMiddleware(mux)
+	handler.ServeHTTP(recorder, req)
+
+	return recorder
+}
+
+// fakeSignedFirmware builds a byte slice shaped like a signed firmware.img:
+// a 512-byte "signature" (unverified in tests, since no public key is configured)
+// followed by an arbitrary firmware payload.
+func fakeSignedFirmware(payload string) []byte {
+	data := make([]byte, firmwareSignatureSize)
+	return append(data, []byte(payload)...)
 }
 
 func TestCreateUser(t *testing.T) {
@@ -2401,6 +2457,271 @@ func TestMakeRevalueMissingFields(t *testing.T) {
 
 	if resp.Code != http.StatusBadRequest {
 		t.Errorf("Expected 400 for zero amount, got %d", resp.Code)
+	}
+}
+
+func TestUploadFirmware(t *testing.T) {
+	mux := setupTestEnvironment(t)
+	defer teardownTestEnvironment(t)
+
+	fw := fakeSignedFirmware("firmware-payload-1.0.0")
+	resp := makeFirmwareUploadRequest(t, mux, "1.0.0", fw, true)
+
+	if resp.Code != http.StatusCreated {
+		t.Fatalf("Expected status 201, got %d. Body: %s", resp.Code, resp.Body.String())
+	}
+
+	var record Firmware
+	err := db.Where("version = ?", "1.0.0").First(&record).Error
+	if err != nil {
+		t.Fatalf("Firmware was not created in database: %v", err)
+	}
+	if record.Size != len(fw) {
+		t.Errorf("Expected size %d, got %d", len(fw), record.Size)
+	}
+	if record.Active {
+		t.Errorf("Newly uploaded firmware should not be active by default")
+	}
+	if len(record.Data) != len(fw) {
+		t.Errorf("Expected stored data length %d, got %d", len(fw), len(record.Data))
+	}
+}
+
+func TestUploadFirmwareInvalidVersion(t *testing.T) {
+	mux := setupTestEnvironment(t)
+	defer teardownTestEnvironment(t)
+
+	resp := makeFirmwareUploadRequest(t, mux, "not-a-version", fakeSignedFirmware("x"), true)
+
+	if resp.Code != http.StatusBadRequest {
+		t.Errorf("Expected 400 for invalid version, got %d. Body: %s", resp.Code, resp.Body.String())
+	}
+}
+
+func TestUploadFirmwareMissingFile(t *testing.T) {
+	mux := setupTestEnvironment(t)
+	defer teardownTestEnvironment(t)
+
+	resp := makeFirmwareUploadRequest(t, mux, "1.0.0", nil, true)
+
+	if resp.Code != http.StatusBadRequest {
+		t.Errorf("Expected 400 for missing file, got %d. Body: %s", resp.Code, resp.Body.String())
+	}
+}
+
+func TestUploadFirmwareTooSmall(t *testing.T) {
+	mux := setupTestEnvironment(t)
+	defer teardownTestEnvironment(t)
+
+	// Smaller than the required 512-byte embedded signature
+	resp := makeFirmwareUploadRequest(t, mux, "1.0.0", []byte("too-small"), true)
+
+	if resp.Code != http.StatusBadRequest {
+		t.Errorf("Expected 400 for undersized firmware, got %d. Body: %s", resp.Code, resp.Body.String())
+	}
+}
+
+func TestUploadFirmwareDuplicateVersion(t *testing.T) {
+	mux := setupTestEnvironment(t)
+	defer teardownTestEnvironment(t)
+
+	resp := makeFirmwareUploadRequest(t, mux, "1.0.0", fakeSignedFirmware("a"), true)
+	if resp.Code != http.StatusCreated {
+		t.Fatalf("Expected first upload to succeed, got %d. Body: %s", resp.Code, resp.Body.String())
+	}
+
+	resp = makeFirmwareUploadRequest(t, mux, "1.0.0", fakeSignedFirmware("b"), true)
+	if resp.Code != http.StatusConflict {
+		t.Errorf("Expected 409 for duplicate version, got %d. Body: %s", resp.Code, resp.Body.String())
+	}
+}
+
+func TestUploadFirmwareRequiresAuth(t *testing.T) {
+	mux := setupTestEnvironment(t)
+	defer teardownTestEnvironment(t)
+
+	resp := makeFirmwareUploadRequest(t, mux, "1.0.0", fakeSignedFirmware("a"), false)
+	if resp.Code != http.StatusUnauthorized {
+		t.Errorf("Expected 401 without API key, got %d", resp.Code)
+	}
+}
+
+func TestGetFirmwareList(t *testing.T) {
+	mux := setupTestEnvironment(t)
+	defer teardownTestEnvironment(t)
+
+	makeFirmwareUploadRequest(t, mux, "1.0.0", fakeSignedFirmware("a"), true)
+	makeFirmwareUploadRequest(t, mux, "1.0.1", fakeSignedFirmware("b"), true)
+
+	resp := makeRequest(t, mux, "POST", "/getFirmwareList", nil, true)
+	if resp.Code != http.StatusOK {
+		t.Fatalf("Expected status 200, got %d. Body: %s", resp.Code, resp.Body.String())
+	}
+
+	var list []Firmware
+	if err := json.Unmarshal(resp.Body.Bytes(), &list); err != nil {
+		t.Fatalf("Failed to parse response: %v", err)
+	}
+	if len(list) != 2 {
+		t.Errorf("Expected 2 firmware entries, got %d", len(list))
+	}
+	for _, f := range list {
+		if f.Data != nil {
+			t.Errorf("Expected firmware list to omit binary data, got %d bytes for version %s", len(f.Data), f.Version)
+		}
+	}
+}
+
+func TestActivateFirmware(t *testing.T) {
+	mux := setupTestEnvironment(t)
+	defer teardownTestEnvironment(t)
+
+	makeFirmwareUploadRequest(t, mux, "1.0.0", fakeSignedFirmware("a"), true)
+	makeFirmwareUploadRequest(t, mux, "1.0.1", fakeSignedFirmware("b"), true)
+
+	resp := makeRequest(t, mux, "POST", "/activateFirmware", map[string]interface{}{"version": "1.0.0"}, true)
+	if resp.Code != http.StatusOK {
+		t.Fatalf("Expected status 200, got %d. Body: %s", resp.Code, resp.Body.String())
+	}
+
+	resp = makeRequest(t, mux, "POST", "/activateFirmware", map[string]interface{}{"version": "1.0.1"}, true)
+	if resp.Code != http.StatusOK {
+		t.Fatalf("Expected status 200, got %d. Body: %s", resp.Code, resp.Body.String())
+	}
+
+	var old, active Firmware
+	db.Where("version = ?", "1.0.0").First(&old)
+	db.Where("version = ?", "1.0.1").First(&active)
+
+	if old.Active {
+		t.Errorf("Expected 1.0.0 to be deactivated after activating 1.0.1")
+	}
+	if !active.Active {
+		t.Errorf("Expected 1.0.1 to be active")
+	}
+}
+
+func TestActivateFirmwareNotFound(t *testing.T) {
+	mux := setupTestEnvironment(t)
+	defer teardownTestEnvironment(t)
+
+	resp := makeRequest(t, mux, "POST", "/activateFirmware", map[string]interface{}{"version": "9.9.9"}, true)
+	if resp.Code != http.StatusNotFound {
+		t.Errorf("Expected 404, got %d. Body: %s", resp.Code, resp.Body.String())
+	}
+}
+
+func TestDeleteFirmware(t *testing.T) {
+	mux := setupTestEnvironment(t)
+	defer teardownTestEnvironment(t)
+
+	makeFirmwareUploadRequest(t, mux, "1.0.0", fakeSignedFirmware("a"), true)
+
+	resp := makeRequest(t, mux, "POST", "/deleteFirmware", map[string]interface{}{"version": "1.0.0"}, true)
+	if resp.Code != http.StatusOK {
+		t.Fatalf("Expected status 200, got %d. Body: %s", resp.Code, resp.Body.String())
+	}
+
+	var count int64
+	db.Model(&Firmware{}).Where("version = ?", "1.0.0").Count(&count)
+	if count != 0 {
+		t.Errorf("Expected firmware to be deleted, but it still exists")
+	}
+}
+
+func TestDeleteFirmwareActiveRejected(t *testing.T) {
+	mux := setupTestEnvironment(t)
+	defer teardownTestEnvironment(t)
+
+	makeFirmwareUploadRequest(t, mux, "1.0.0", fakeSignedFirmware("a"), true)
+	makeRequest(t, mux, "POST", "/activateFirmware", map[string]interface{}{"version": "1.0.0"}, true)
+
+	resp := makeRequest(t, mux, "POST", "/deleteFirmware", map[string]interface{}{"version": "1.0.0"}, true)
+	if resp.Code != http.StatusBadRequest {
+		t.Errorf("Expected 400 when deleting active firmware, got %d. Body: %s", resp.Code, resp.Body.String())
+	}
+}
+
+func TestDeleteFirmwareNotFound(t *testing.T) {
+	mux := setupTestEnvironment(t)
+	defer teardownTestEnvironment(t)
+
+	resp := makeRequest(t, mux, "POST", "/deleteFirmware", map[string]interface{}{"version": "9.9.9"}, true)
+	if resp.Code != http.StatusNotFound {
+		t.Errorf("Expected 404, got %d. Body: %s", resp.Code, resp.Body.String())
+	}
+}
+
+func TestFirmwareManifestNoActive(t *testing.T) {
+	mux := setupTestEnvironment(t)
+	defer teardownTestEnvironment(t)
+
+	resp := makeRequest(t, mux, "GET", "/firmware/manifest.json", nil, false)
+	if resp.Code != http.StatusNotFound {
+		t.Errorf("Expected 404 when no firmware is active, got %d", resp.Code)
+	}
+}
+
+func TestFirmwareManifestPublic(t *testing.T) {
+	mux := setupTestEnvironment(t)
+	defer teardownTestEnvironment(t)
+
+	makeFirmwareUploadRequest(t, mux, "1.2.3", fakeSignedFirmware("a"), true)
+	makeRequest(t, mux, "POST", "/activateFirmware", map[string]interface{}{"version": "1.2.3"}, true)
+
+	// No API key required - this is what ESP32 devices hit directly
+	resp := makeRequest(t, mux, "GET", "/firmware/manifest.json", nil, false)
+	if resp.Code != http.StatusOK {
+		t.Fatalf("Expected status 200, got %d. Body: %s", resp.Code, resp.Body.String())
+	}
+
+	var manifest map[string]string
+	if err := json.Unmarshal(resp.Body.Bytes(), &manifest); err != nil {
+		t.Fatalf("Failed to parse manifest: %v", err)
+	}
+	if manifest["type"] != "esp32-fota-http" {
+		t.Errorf("Expected type esp32-fota-http, got %s", manifest["type"])
+	}
+	if manifest["version"] != "1.2.3" {
+		t.Errorf("Expected version 1.2.3, got %s", manifest["version"])
+	}
+	if manifest["bin"] != "firmware.img" {
+		t.Errorf("Expected bin firmware.img, got %s", manifest["bin"])
+	}
+}
+
+func TestFirmwareBinaryRequiresAuth(t *testing.T) {
+	mux := setupTestEnvironment(t)
+	defer teardownTestEnvironment(t)
+
+	fw := fakeSignedFirmware("binary-payload")
+	makeFirmwareUploadRequest(t, mux, "1.0.0", fw, true)
+	makeRequest(t, mux, "POST", "/activateFirmware", map[string]interface{}{"version": "1.0.0"}, true)
+
+	resp := makeRequest(t, mux, "GET", "/firmware/firmware.img", nil, false)
+	if resp.Code != http.StatusUnauthorized {
+		t.Errorf("Expected 401 without API key, got %d", resp.Code)
+	}
+
+	resp = makeRequest(t, mux, "GET", "/firmware/firmware.img", nil, true)
+	if resp.Code != http.StatusOK {
+		t.Fatalf("Expected status 200, got %d. Body: %s", resp.Code, resp.Body.String())
+	}
+	if !bytes.Equal(resp.Body.Bytes(), fw) {
+		t.Errorf("Returned firmware binary does not match uploaded bytes")
+	}
+	if ct := resp.Header().Get("Content-Type"); ct != "application/octet-stream" {
+		t.Errorf("Expected Content-Type application/octet-stream, got %s", ct)
+	}
+}
+
+func TestFirmwareBinaryNoActive(t *testing.T) {
+	mux := setupTestEnvironment(t)
+	defer teardownTestEnvironment(t)
+
+	resp := makeRequest(t, mux, "GET", "/firmware/firmware.img", nil, true)
+	if resp.Code != http.StatusNotFound {
+		t.Errorf("Expected 404 when no firmware is active, got %d", resp.Code)
 	}
 }
 

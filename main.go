@@ -106,6 +106,10 @@ func main() {
 	mux.HandleFunc("/makeRevalue", authMiddleware(makeRevalueHandler))
 	mux.HandleFunc("/editTransaction", authMiddleware(editTransactionHandler))
 	mux.HandleFunc("/deleteTransaction", authMiddleware(deleteTransactionHandler))
+	mux.HandleFunc("/uploadFirmware", authMiddleware(uploadFirmwareHandler))
+	mux.HandleFunc("/getFirmwareList", authMiddleware(getFirmwareListHandler))
+	mux.HandleFunc("/activateFirmware", authMiddleware(activateFirmwareHandler))
+	mux.HandleFunc("/deleteFirmware", authMiddleware(deleteFirmwareHandler))
 	// OIDC auth routes (no auth required, registered only if OIDC is enabled)
 	if oidcEnabled {
 		mux.HandleFunc("/auth/login", authLoginHandler)
@@ -115,7 +119,10 @@ func main() {
 	}
 
 	mux.Handle("/metrics", promhttp.Handler())
-	mux.HandleFunc("/api/v1/read", remoteReadHandler) // Prometheus Remote Read endpoint (no auth required)
+	mux.HandleFunc("/api/v1/read", remoteReadHandler)                  // Prometheus Remote Read endpoint (no auth required)
+	mux.HandleFunc("/firmware/manifest.json", firmwareManifestHandler) // OTA manifest for devices (no auth required)
+	//	mux.HandleFunc("/firmware/firmware.img", authMiddleware(firmwareBinaryHandler)) // OTA firmware binary download (requires X-API-Key)
+	mux.HandleFunc("/firmware/firmware.img", firmwareBinaryHandler) // OTA firmware binary download
 
 	// Swagger UI
 	mux.HandleFunc("/swagger/", httpSwagger.WrapHandler)

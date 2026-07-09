@@ -59,6 +59,20 @@ func (ProductMap) TableName() string {
 	return "product_map"
 }
 
+type Firmware struct {
+	ID        uint      `gorm:"primaryKey" json:"id"`
+	Version   string    `gorm:"uniqueIndex;size:64" json:"version"`
+	Filename  string    `json:"filename"`
+	Data      []byte    `json:"-"`
+	Size      int       `json:"size"`
+	Active    bool      `gorm:"default:false" json:"active"`
+	CreatedAt time.Time `gorm:"default:CURRENT_TIMESTAMP" json:"created_at"`
+}
+
+func (Firmware) TableName() string {
+	return "firmware"
+}
+
 type Session struct {
 	Token     string `gorm:"primaryKey;size:64"`
 	Email     string
@@ -189,6 +203,10 @@ type ProductMapRequest struct {
 
 type DeleteByIDRequest struct {
 	ID uint `json:"id"`
+}
+
+type FirmwareVersionRequest struct {
+	Version string `json:"version"`
 }
 
 type RevalueRequest struct {
