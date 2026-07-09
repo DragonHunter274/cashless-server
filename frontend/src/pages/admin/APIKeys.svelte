@@ -20,6 +20,7 @@ const ALL_ENDPOINTS = [
     '/createUser', '/createVoucher', '/createPrivilege',
     '/createAPIKey', '/deleteAPIKey', '/createProductMapping',
     '/deleteProductMapping', '/deleteVoucher', '/deletePrivilege',
+    '/makeRevalue', '/editTransaction', '/deleteTransaction',
     '/uploadFirmware', '/getFirmwareList', '/activateFirmware',
     '/deleteFirmware', '/firmware/firmware.img'
 ];
